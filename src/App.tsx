@@ -40,6 +40,7 @@ import {
 import {
   engineLabel,
   errorText,
+  objectTabTitle,
   type Connection,
   type ConnectPayload,
   type DbObject,
@@ -151,11 +152,12 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [connectOpen, aboutOpen, helpOpen, rename, historyOpen, settingsOpen]);
 
-  function makeTab(connectionId: string | null, database: string, sql = ""): QueryTab {
-    counter.current += 1;
+  function makeTab(connectionId: string | null, database: string, sql = "", title = ""): QueryTab {
+    const custom = title.trim();
+    if (!custom) counter.current += 1;
     return {
       id: crypto.randomUUID(),
-      title: `SQLQuery${counter.current}.sql`,
+      title: custom || `SQLQuery${counter.current}.sql`,
       sql,
       connectionId,
       database,
@@ -179,8 +181,8 @@ export default function App() {
     return { connectionId: first?.id ?? null, database: first?.database ?? "" };
   }
 
-  function openTab(connectionId: string | null, database: string, sql = "") {
-    const tab = makeTab(connectionId, database, sql);
+  function openTab(connectionId: string | null, database: string, sql = "", title = "") {
+    const tab = makeTab(connectionId, database, sql, title);
     setTabs((current) => [...current, tab]);
     setActiveTabId(tab.id);
     setMenu(null);
@@ -344,12 +346,18 @@ export default function App() {
     showNotice(message);
   }
 
+  function routineTitle(connectionId: string, object: DbObject): string {
+    const engine = connectionsRef.current.find((item) => item.id === connectionId)?.engine ?? "postgres";
+    return objectTabTitle(engine, object.schema, object.name);
+  }
+
   async function openRoutine(connectionId: string, database: string, object: DbObject) {
+    const title = routineTitle(connectionId, object);
     try {
       const sql = await scriptRoutine(connectionId, database, object.schema, object.name, object.kind);
-      openTab(connectionId, database, sql.endsWith("\n") ? sql : `${sql}\n`);
+      openTab(connectionId, database, sql.endsWith("\n") ? sql : `${sql}\n`, title);
     } catch (reason) {
-      openTab(connectionId, database, `-- ${errorText(reason)}\n`);
+      openTab(connectionId, database, `-- ${errorText(reason)}\n`, title);
     }
   }
 
@@ -472,7 +480,12 @@ export default function App() {
               : `Saved ${fileName}.`,
         );
       } else {
-        openTab(connectionId, database, sql.endsWith("\n") ? sql : `${sql}\n`);
+        const kind = object?.kind.toLowerCase() ?? "";
+        const title =
+          object && (kind === "view" || kind === "procedure" || kind === "function")
+            ? routineTitle(connectionId, object)
+            : "";
+        openTab(connectionId, database, sql.endsWith("\n") ? sql : `${sql}\n`, title);
         if (result.warnings.length) {
           showNotice(`Script opened with ${result.warnings.length} warning(s).`);
         }
@@ -871,7 +884,7 @@ export default function App() {
               onDisconnect={(id) => void disconnect(id)}
               onRefresh={(id) => void refreshConnection(id)}
               onNewQuery={(connectionId, database) => newQuery(connectionId, database)}
-              onSelectTop={(connectionId, database, sql) => openTab(connectionId, database, sql)}
+              onSelectTop={(connectionId, database, sql, title) => openTab(connectionId, database, sql, title)}
               onSelectContext={(connectionId, database) => setContext({ connectionId, database })}
               onRenameDatabase={(connectionId, database) =>
                 setRename({ kind: "database", connectionId, database })
@@ -930,7 +943,7 @@ export default function App() {
                       setActiveTabId(tab.id);
                     }}
                   >
-                    <span>{tab.title}</span>
+                    <span title={tab.title}>{tab.title}</span>
                     <button
                       className="close"
                       title="Close"

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "re
 import { listColumns, listObjects } from "../api";
 import {
   errorText,
+  objectTabTitle,
   selectTopSql,
   type ColumnInfo,
   type Connection,
@@ -31,7 +32,7 @@ type Props = {
   onDisconnect: (connectionId: string) => void;
   onRefresh: (connectionId: string) => void;
   onNewQuery: (connectionId: string, database: string) => void;
-  onSelectTop: (connectionId: string, database: string, sql: string) => void;
+  onSelectTop: (connectionId: string, database: string, sql: string, title?: string) => void;
   onSelectContext: (connectionId: string, database: string) => void;
   onRenameDatabase: (connectionId: string, database: string) => void;
   onRenameTable: (connectionId: string, database: string, schema: string, name: string) => void;
@@ -228,6 +229,9 @@ export function ObjectExplorer({
                   connection.id,
                   database,
                   selectTopSql(connection.engine, object.schema, object.name),
+                  object.kind.toLowerCase() === "view"
+                    ? objectTabTitle(connection.engine, object.schema, object.name)
+                    : undefined,
                 )
               }
               onRenameDatabase={(database) => onRenameDatabase(connection.id, database)}

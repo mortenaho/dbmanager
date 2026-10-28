@@ -145,6 +145,13 @@ export function quoteIdent(engine: EngineKind, name: string): string {
   return `\`${name.split("`").join("``")}\``;
 }
 
+export function objectTabTitle(engine: EngineKind, schema: string, name: string): string {
+  const schemaName = schema.trim();
+  const objectName = name.trim();
+  if (engine === "mysql" || schemaName === "") return objectName;
+  return `${schemaName}.${objectName}`;
+}
+
 export function selectTopSql(engine: EngineKind, schema: string, table: string): string {
   if (engine === "mssql") {
     return `SELECT TOP (1000) *\nFROM ${quoteIdent(engine, schema)}.${quoteIdent(engine, table)};`;
