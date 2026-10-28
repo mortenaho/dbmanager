@@ -90,7 +90,7 @@ pub struct ColumnRef {
     pub data_type: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultSet {
     pub columns: Vec<String>,
@@ -99,7 +99,7 @@ pub struct ResultSet {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryMessage {
     pub level: String,

@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { resultsToJson, resultsToXlsx } from "./export";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
@@ -10,15 +12,20 @@ import {
   listObjects,
   loadProfiles,
   parseSql,
+  clearHistory,
   generateScript,
+  logEvent,
   renameObject,
   saveProfile,
   scriptRoutine,
 } from "./api";
 import { ConnectDialog } from "./components/ConnectDialog";
+import { HelpDialog } from "./components/HelpDialog";
+import { HistoryDialog } from "./components/HistoryDialog";
 import { CheckIcon, FormatIcon, NewQueryIcon, PlayIcon, PlugIcon } from "./components/Icons";
 import { ObjectExplorer } from "./components/ObjectExplorer";
 import { RenameDialog } from "./components/RenameDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { ResultsPane } from "./components/ResultsPane";
 import {
   bindModelEngine,
@@ -35,8 +42,10 @@ import {
   type Connection,
   type ConnectPayload,
   type DbObject,
+  type HistoryDetail,
   type Profile,
   type QueryTab,
+  type ResultSet,
 } from "./types";
 
 type RenameTarget =
@@ -56,6 +65,10 @@ export default function App() {
   const [recent, setRecent] = useState<Profile[]>([]);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
   const [menu, setMenu] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [context, setContext] = useState<{ connectionId: string; database: string } | null>(null);
@@ -99,16 +112,35 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (connectOpen || aboutOpen || rename) return;
+      if (event.key === "Escape") {
+        if (settingsOpen) setSettingsOpen(false);
+        else if (helpOpen) setHelpOpen(false);
+        else if (aboutOpen) setAboutOpen(false);
+        else if (historyOpen) setHistoryOpen(false);
+        else if (rename) setRename(null);
+        else if (connectOpen) setConnectOpen(false);
+        return;
+      }
+      if (event.key === "F1") {
+        event.preventDefault();
+        setHelpOpen((open) => !open);
+        return;
+      }
+      if (connectOpen || aboutOpen || rename || historyOpen || settingsOpen || helpOpen) return;
+      const typing = event.target instanceof HTMLElement && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA");
       if (event.key === "F5" && event.ctrlKey) {
         event.preventDefault();
         void parseRef.current();
-      } else if (event.key === "F5") {
+      } else if (event.key === "F5" || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "e")) {
         event.preventDefault();
         void runRef.current();
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
         newQueryRef.current();
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "w" && !typing) {
+        event.preventDefault();
+        const id = activeRef.current;
+        if (id) closeTab(id);
       } else if (event.shiftKey && event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
         formatRef.current();
@@ -116,7 +148,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [connectOpen, aboutOpen, rename]);
+  }, [connectOpen, aboutOpen, helpOpen, rename, historyOpen, settingsOpen]);
 
   function makeTab(connectionId: string | null, database: string, sql = ""): QueryTab {
     counter.current += 1;
@@ -194,13 +226,16 @@ export default function App() {
     try {
       const response = await executeSql(tab.connectionId, tab.database, tab.sql);
       const failed = response.messages.some((message) => message.level === "error");
+      const hasGrid = response.resultSets.some((set) => set.columns.length > 0);
+      const guard = hasGrid ? undefined : response.messages.find((message) => message.level === "warn");
       patchTab(tab.id, {
         running: false,
         resultSets: response.resultSets,
         messages: response.messages,
         elapsedMs: response.elapsedMs,
-        activePane: failed ? "messages" : "results",
+        activePane: failed || guard ? "messages" : "results",
       });
+      if (guard) showNotice(guard.text.split("\n")[0]);
     } catch (reason) {
       patchTab(tab.id, {
         running: false,
@@ -319,10 +354,30 @@ export default function App() {
 
   const scriptingRef = useRef(false);
 
+  function bytesToBase64(bytes: Uint8Array): string {
+    let binary = "";
+    const size = 0x8000;
+    for (let index = 0; index < bytes.length; index += size) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + size));
+    }
+    return btoa(binary);
+  }
+
   async function saveSqlFile(fileName: string, contents: string): Promise<"saved" | "cancelled"> {
+    return saveFile(fileName, contents, { name: "SQL script", extensions: ["sql"] });
+  }
+
+  async function saveFile(
+    fileName: string,
+    contents: string | Uint8Array,
+    filter: { name: string; extensions: string[] },
+  ): Promise<"saved" | "cancelled"> {
     const tauri = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
     if (!tauri) {
-      const blob = new Blob([contents], { type: "text/plain;charset=utf-8" });
+      const blob = new Blob(
+        typeof contents === "string" ? [contents] : [Uint8Array.from(contents).buffer],
+        { type: typeof contents === "string" ? "text/plain;charset=utf-8" : "application/octet-stream" },
+      );
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -331,15 +386,56 @@ export default function App() {
       URL.revokeObjectURL(url);
       return "saved";
     }
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const { invoke } = await import("@tauri-apps/api/core");
-    const path = await save({
-      defaultPath: fileName,
-      filters: [{ name: "SQL script", extensions: ["sql"] }],
+    const path = await invoke<string | null>("plugin:dialog|save", {
+      options: {
+        defaultPath: fileName,
+        filters: [filter],
+      },
     });
     if (!path) return "cancelled";
-    await invoke("write_text_file", { path, contents });
+    if (typeof contents === "string") {
+      await invoke("write_text_file", { path, contents });
+    } else {
+      await invoke("write_binary_file", { path, contentsBase64: bytesToBase64(contents) });
+    }
     return "saved";
+  }
+
+  async function exportSets(format: "xlsx" | "json", sets: ResultSet[], title: string) {
+    const grids = sets.filter((set) => set.columns.length > 0);
+    if (grids.length === 0) {
+      showNotice("There is no result set to save.");
+      return;
+    }
+    const base = (title || "results").replace(/\.sql$/i, "").replace(/[\\/:*?"<>|]/g, "_") || "results";
+    try {
+      const saved =
+        format === "json"
+          ? await saveFile(`${base}.json`, resultsToJson(grids), { name: "JSON", extensions: ["json"] })
+          : await saveFile(`${base}.xlsx`, resultsToXlsx(grids), { name: "Excel workbook", extensions: ["xlsx"] });
+      if (saved === "saved") {
+        showNotice(format === "json" ? "Results saved as JSON." : "Results saved as Excel.");
+        void logEvent("info", "export", `Saved results as ${format.toUpperCase()}.`).catch(() => undefined);
+      }
+    } catch (reason) {
+      showNotice(errorText(reason));
+    }
+  }
+
+  function exportResults(format: "xlsx" | "json") {
+    if (!activeTab) return;
+    void exportSets(format, activeTab.resultSets, activeTab.title);
+  }
+
+  async function clearSavedHistory() {
+    if (!window.confirm("Delete all saved queries, results, and logs?")) return;
+    try {
+      await clearHistory();
+      setHistoryVersion((value) => value + 1);
+      showNotice("History cleared.");
+    } catch (reason) {
+      showNotice(errorText(reason));
+    }
   }
 
   async function runGenerate(
@@ -594,6 +690,12 @@ export default function App() {
               disabled: !activeConnection,
               action: () => activeConnection && void disconnect(activeConnection.id),
             },
+            {
+              label: "Close",
+              hint: "Ctrl+W",
+              disabled: !activeTab,
+              action: () => activeTab && closeTab(activeTab.id),
+            },
             { label: "sep" },
             {
               label: "Exit",
@@ -621,6 +723,7 @@ export default function App() {
               hint: "",
               action: () => setShowExplorer((value) => !value),
             },
+            { label: "History", hint: "", action: () => setHistoryOpen(true) },
           ]}
         />
         <Menu
@@ -645,6 +748,19 @@ export default function App() {
               action: () => formatQuery(),
             },
             { label: "sep" },
+            {
+              label: "Save Results as Excel",
+              hint: "",
+              disabled: !activeTab?.resultSets.some((set) => set.columns.length > 0),
+              action: () => void exportResults("xlsx"),
+            },
+            {
+              label: "Save Results as JSON",
+              hint: "",
+              disabled: !activeTab?.resultSets.some((set) => set.columns.length > 0),
+              action: () => void exportResults("json"),
+            },
+            { label: "sep" },
             ...SQL_SNIPPETS.filter((snippet) =>
               ["select", "ins", "upd", "join", "createproc"].includes(snippet.label),
             ).map((snippet) => ({
@@ -656,13 +772,26 @@ export default function App() {
           ]}
         />
         <Menu
+          label="Tools"
+          open={menu === "Tools"}
+          hot={menu !== null}
+          onOpen={() => setMenu(menu === "Tools" ? null : "Tools")}
+          onHover={() => setMenu("Tools")}
+          onDismiss={() => setMenu(null)}
+          items={[{ label: "Options...", hint: "", action: () => setSettingsOpen(true) }]}
+        />
+        <Menu
           label="Help"
           open={menu === "Help"}
           hot={menu !== null}
           onOpen={() => setMenu(menu === "Help" ? null : "Help")}
           onHover={() => setMenu("Help")}
           onDismiss={() => setMenu(null)}
-          items={[{ label: "About DB Manager", hint: "", action: () => setAboutOpen(true) }]}
+          items={[
+            { label: "Keyboard Shortcuts", hint: "F1", action: () => setHelpOpen(true) },
+            { label: "sep" },
+            { label: "About DB Manager", hint: "", action: () => setAboutOpen(true) },
+          ]}
         />
       </div>
 
@@ -893,6 +1022,7 @@ export default function App() {
                       messages={activeTab.messages}
                       activePane={activeTab.activePane}
                       onPane={(pane) => patchTab(activeTab.id, { activePane: pane })}
+                      onExport={(format) => void exportResults(format)}
                     />
                   </div>
                 ) : null}
@@ -936,23 +1066,48 @@ export default function App() {
           onSubmit={(name) => applyRename(rename, name)}
         />
       ) : null}
+      {historyOpen ? (
+        <HistoryDialog
+          version={historyVersion}
+          onClose={() => setHistoryOpen(false)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenQuery={(database, sql) => openTab(activeTab?.connectionId ?? connections[0]?.id ?? null, database, sql)}
+          onExport={(format, detail: HistoryDetail) => void exportSets(format, detail.resultSets, "history")}
+          onClear={() => void clearSavedHistory()}
+        />
+      ) : null}
+      {settingsOpen ? (
+        <SettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          onSaved={(message) => {
+            setHistoryVersion((value) => value + 1);
+            showNotice(message);
+          }}
+        />
+      ) : null}
+      {helpOpen ? <HelpDialog onClose={() => setHelpOpen(false)} /> : null}
       {aboutOpen ? (
         <div className="overlay" onMouseDown={() => setAboutOpen(false)}>
           <div className="dialog small" onMouseDown={(event) => event.stopPropagation()}>
             <div className="dialog-title">About DB Manager</div>
             <div className="dialog-body about">
               <img className="app-logo" src="/logo.png" alt="" width={48} height={48} />
-              <p>
-                <strong>DB Manager</strong> is a desktop SQL studio for SQL Server, PostgreSQL, and MySQL.
-              </p>
-              <p>Press F5 to execute the current query. Ctrl+F5 checks the syntax. Shift+Alt+F formats it. Ctrl+N opens a new query window.</p>
-              <p>
-                Object Explorer lists databases, tables, views, stored procedures, functions, and columns. Right-click a
-                database or table to rename it, generate a script, or save a SQL backup. Double-click a procedure to script it.
-              </p>
-              <p>In the editor, type a snippet such as sel, ins, or join, or type a table name and press Ctrl+Space.</p>
+              <p className="about-brand">MoriX</p>
+              <h2>DB Manager</h2>
+              <p>A desktop SQL studio for SQL Server, PostgreSQL, and MySQL.</p>
+              <p className="about-company">DB Manager is a product of MoriX.</p>
             </div>
             <div className="dialog-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setAboutOpen(false);
+                  setHelpOpen(true);
+                }}
+              >
+                Shortcuts
+              </button>
+              <span className="spacer" />
               <button className="default" onClick={() => setAboutOpen(false)}>
                 OK
               </button>

@@ -8,6 +8,10 @@ import type {
   Profile,
   QueryResponse,
   ScriptResult,
+  HistoryQuery,
+  HistoryDetail,
+  AppEvent,
+  AppSettings,
 } from "./types";
 
 export function connectServer(payload: ConnectPayload): Promise<Connection> {
@@ -107,4 +111,36 @@ export function saveProfile(profile: Profile): Promise<Profile> {
 
 export function deleteProfile(id: string): Promise<void> {
   return invoke("delete_profile", { id });
+}
+
+export function listHistory(needle = ""): Promise<HistoryQuery[]> {
+  return invoke<HistoryQuery[]>("list_history", { needle, limit: 200 });
+}
+
+export function getHistory(id: number): Promise<HistoryDetail> {
+  return invoke<HistoryDetail>("get_history", { id });
+}
+
+export function deleteHistory(id: number): Promise<void> {
+  return invoke("delete_history", { id });
+}
+
+export function clearHistory(): Promise<void> {
+  return invoke("clear_history");
+}
+
+export function listEvents(needle = ""): Promise<AppEvent[]> {
+  return invoke<AppEvent[]>("list_events", { needle, limit: 200 });
+}
+
+export function logEvent(level: string, kind: string, message: string): Promise<void> {
+  return invoke("log_event", { level, kind, message });
+}
+
+export function loadSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>("load_settings");
+}
+
+export function saveSettings(historyDays: number): Promise<AppSettings> {
+  return invoke<AppSettings>("save_settings", { historyDays });
 }

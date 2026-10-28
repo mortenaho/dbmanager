@@ -82,6 +82,36 @@ export type ScriptResult = {
   warnings: string[];
 };
 
+export type HistoryQuery = {
+  id: number;
+  createdAt: string;
+  engine: string;
+  server: string;
+  databaseName: string;
+  sql: string;
+  status: string;
+  error: string;
+  elapsedMs: number;
+  rowCount: number;
+};
+
+export type HistoryDetail = HistoryQuery & {
+  messages: QueryMessage[];
+  resultSets: ResultSet[];
+};
+
+export type AppEvent = {
+  id: number;
+  createdAt: string;
+  level: string;
+  kind: string;
+  message: string;
+};
+
+export type AppSettings = {
+  historyDays: number;
+};
+
 export type QueryTab = {
   id: string;
   title: string;

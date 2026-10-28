@@ -1,3 +1,4 @@
+pub(crate) mod guard;
 mod mssql;
 mod mysql;
 mod postgres;
