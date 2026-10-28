@@ -10,6 +10,7 @@ import {
   listObjects,
   loadProfiles,
   parseSql,
+  generateScript,
   renameObject,
   saveProfile,
   scriptRoutine,
@@ -316,6 +317,76 @@ export default function App() {
     }
   }
 
+  const scriptingRef = useRef(false);
+
+  async function saveSqlFile(fileName: string, contents: string): Promise<"saved" | "cancelled"> {
+    const tauri = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
+    if (!tauri) {
+      const blob = new Blob([contents], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+      return "saved";
+    }
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const path = await save({
+      defaultPath: fileName,
+      filters: [{ name: "SQL script", extensions: ["sql"] }],
+    });
+    if (!path) return "cancelled";
+    await invoke("write_text_file", { path, contents });
+    return "saved";
+  }
+
+  async function runGenerate(
+    connectionId: string,
+    database: string,
+    object: DbObject | null,
+    mode: "create" | "insert" | "both" | "schema" | "backup",
+  ) {
+    if (scriptingRef.current) return;
+    scriptingRef.current = true;
+    const backup = mode === "backup";
+    showNotice(backup ? "Creating backup..." : "Generating script...");
+    try {
+      const result = await generateScript(
+        connectionId,
+        database,
+        object?.schema ?? "",
+        object?.name ?? database,
+        object?.kind ?? "database",
+        mode !== "insert",
+        mode === "insert" || mode === "both" || backup,
+      );
+      const notes = result.warnings.length ? `\n-- ${result.warnings.join("\n-- ")}\n` : "";
+      const sql = `${result.sql}${notes}`;
+      const fileName = object ? `${object.name}.sql` : `${database}-${backup ? "backup" : "script"}.sql`;
+      if (backup || sql.length > 1_500_000) {
+        const saved = await saveSqlFile(fileName, sql);
+        showNotice(
+          saved === "cancelled"
+            ? "Save cancelled."
+            : result.warnings.length
+              ? `Saved ${fileName} with ${result.warnings.length} warning(s).`
+              : `Saved ${fileName}.`,
+        );
+      } else {
+        openTab(connectionId, database, sql.endsWith("\n") ? sql : `${sql}\n`);
+        if (result.warnings.length) {
+          showNotice(`Script opened with ${result.warnings.length} warning(s).`);
+        }
+      }
+    } catch (reason) {
+      showNotice(errorText(reason));
+    } finally {
+      scriptingRef.current = false;
+    }
+  }
+
   const runRef = useRef(runQuery);
   const parseRef = useRef(parseQuery);
   const formatRef = useRef(formatQuery);
@@ -498,6 +569,26 @@ export default function App() {
               action: () => void quickConnect(profile),
             })),
             {
+              label: "Generate Scripts",
+              hint: "",
+              disabled: !activeTab?.connectionId || !activeTab.database,
+              action: () => {
+                if (activeTab?.connectionId && activeTab.database) {
+                  void runGenerate(activeTab.connectionId, activeTab.database, null, "schema");
+                }
+              },
+            },
+            {
+              label: "Backup Database",
+              hint: "",
+              disabled: !activeTab?.connectionId || !activeTab.database,
+              action: () => {
+                if (activeTab?.connectionId && activeTab.database) {
+                  void runGenerate(activeTab.connectionId, activeTab.database, null, "backup");
+                }
+              },
+            },
+            {
               label: "Disconnect",
               hint: "",
               disabled: !activeConnection,
@@ -659,6 +750,9 @@ export default function App() {
                 setRename({ kind: "table", connectionId, database, schema, name })
               }
               onScriptRoutine={(connectionId, database, object) => void openRoutine(connectionId, database, object)}
+              onGenerateScript={(connectionId, database, object, mode) =>
+                void runGenerate(connectionId, database, object, mode)
+              }
             />
             <div className="splitter-v" onMouseDown={(event) => startDrag("explorer", event)} />
           </>
@@ -854,7 +948,7 @@ export default function App() {
               <p>Press F5 to execute the current query. Ctrl+F5 checks the syntax. Shift+Alt+F formats it. Ctrl+N opens a new query window.</p>
               <p>
                 Object Explorer lists databases, tables, views, stored procedures, functions, and columns. Right-click a
-                database or table to rename it. Double-click a procedure to script it.
+                database or table to rename it, generate a script, or save a SQL backup. Double-click a procedure to script it.
               </p>
               <p>In the editor, type a snippet such as sel, ins, or join, or type a table name and press Ctrl+Space.</p>
             </div>

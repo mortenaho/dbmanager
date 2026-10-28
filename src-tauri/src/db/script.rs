@@ -103,6 +103,7 @@ pub fn insert_sql(
     table: &str,
     columns: &[String],
     rows: &[Vec<Option<String>>],
+    identity_insert: bool,
 ) -> String {
     if columns.is_empty() || rows.is_empty() {
         return String::new();
@@ -114,6 +115,9 @@ pub fn insert_sql(
         .collect::<Vec<_>>()
         .join(", ");
     let mut sql = String::new();
+    if identity_insert && engine == EngineKind::Mssql {
+        sql.push_str(&format!("SET IDENTITY_INSERT {qualified} ON;\n"));
+    }
     for chunk in rows.chunks(40) {
         sql.push_str(&format!("INSERT INTO {qualified} ({names})\nVALUES\n"));
         for (index, row) in chunk.iter().enumerate() {
@@ -132,6 +136,9 @@ pub fn insert_sql(
                 sql.push_str(",\n");
             }
         }
+    }
+    if identity_insert && engine == EngineKind::Mssql {
+        sql.push_str(&format!("SET IDENTITY_INSERT {qualified} OFF;\n"));
     }
     sql
 }
@@ -171,6 +178,7 @@ mod tests {
             "orders",
             &["id".into()],
             &[vec![Some("1".into())]],
+            false,
         );
         assert!(insert.starts_with("INSERT INTO \"public\".\"orders\" (\"id\")"));
         assert!(insert.contains("('1')"));

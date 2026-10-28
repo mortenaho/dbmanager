@@ -7,6 +7,7 @@ import type {
   DbObject,
   Profile,
   QueryResponse,
+  ScriptResult,
 } from "./types";
 
 export function connectServer(payload: ConnectPayload): Promise<Connection> {
@@ -47,6 +48,26 @@ export function renameObject(
   newName: string,
 ): Promise<string> {
   return invoke<string>("rename_object", { connectionId, kind, database, schema, name, newName });
+}
+
+export function generateScript(
+  connectionId: string,
+  database: string,
+  schema: string,
+  name: string,
+  kind: string,
+  includeCreate: boolean,
+  includeData: boolean,
+): Promise<ScriptResult> {
+  return invoke<ScriptResult>("generate_script", {
+    connectionId,
+    database,
+    schema,
+    name,
+    kind,
+    includeCreate,
+    includeData,
+  });
 }
 
 export function scriptRoutine(

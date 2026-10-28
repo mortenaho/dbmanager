@@ -36,6 +36,12 @@ type Props = {
   onRenameDatabase: (connectionId: string, database: string) => void;
   onRenameTable: (connectionId: string, database: string, schema: string, name: string) => void;
   onScriptRoutine: (connectionId: string, database: string, object: DbObject) => void;
+  onGenerateScript: (
+    connectionId: string,
+    database: string,
+    object: DbObject | null,
+    mode: "create" | "insert" | "both" | "schema" | "backup",
+  ) => void;
 };
 
 type MenuState = {
@@ -59,6 +65,7 @@ export function ObjectExplorer({
   onRenameDatabase,
   onRenameTable,
   onScriptRoutine,
+  onGenerateScript,
 }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState("");
@@ -228,6 +235,9 @@ export function ObjectExplorer({
                 onRenameTable(connection.id, database, object.schema, object.name)
               }
               onScriptRoutine={(database, object) => onScriptRoutine(connection.id, database, object)}
+              onGenerateScript={(database, object, mode) =>
+                onGenerateScript(connection.id, database, object, mode)
+              }
             />
           ))
         )}
@@ -272,6 +282,11 @@ function ServerNode(props: {
   onRenameDatabase: (database: string) => void;
   onRenameTable: (database: string, object: DbObject) => void;
   onScriptRoutine: (database: string, object: DbObject) => void;
+  onGenerateScript: (
+    database: string,
+    object: DbObject | null,
+    mode: "create" | "insert" | "both" | "schema" | "backup",
+  ) => void;
 }) {
   const id = `server:${props.connection.id}`;
   const open = props.expanded.has(id);
@@ -339,6 +354,14 @@ function DatabaseNode(
         onContextMenu={(event) =>
           props.onMenu(event, [
             { label: "New Query", action: () => props.onNewQuery(props.database) },
+            {
+              label: "Generate Scripts",
+              action: () => props.onGenerateScript(props.database, null, "schema"),
+            },
+            {
+              label: "Backup Database",
+              action: () => props.onGenerateScript(props.database, null, "backup"),
+            },
             { label: "Rename", action: () => props.onRenameDatabase(props.database) },
             { label: "Refresh", action: props.onRefresh },
           ])
@@ -447,6 +470,11 @@ function ObjectNode(
     onNewQuery: (database: string) => void;
     onRenameTable: (database: string, object: DbObject) => void;
     onScriptRoutine: (database: string, object: DbObject) => void;
+    onGenerateScript: (
+      database: string,
+      object: DbObject | null,
+      mode: "create" | "insert" | "both" | "schema" | "backup",
+    ) => void;
     onMenu: (event: MouseEvent, items: MenuState["items"]) => void;
   },
 ) {
@@ -486,14 +514,39 @@ function ObjectNode(
                   { label: "Script as CREATE", action: () => props.onScriptRoutine(props.database, props.object) },
                   { label: "New Query", action: () => props.onNewQuery(props.database) },
                 ]
-              : [
-                  {
-                    label: props.connection.engine === "mssql" ? "Select Top 1000 Rows" : "Select First 1000 Rows",
-                    action: () => props.onSelectTop(props.database, props.object),
-                  },
-                  { label: "Rename", action: () => props.onRenameTable(props.database, props.object) },
-                  { label: "New Query", action: () => props.onNewQuery(props.database) },
-                ],
+              : props.folder === "view"
+                ? [
+                    {
+                      label: props.connection.engine === "mssql" ? "Select Top 1000 Rows" : "Select First 1000 Rows",
+                      action: () => props.onSelectTop(props.database, props.object),
+                    },
+                    {
+                      label: "Script as CREATE",
+                      action: () => props.onGenerateScript(props.database, props.object, "create"),
+                    },
+                    { label: "Rename", action: () => props.onRenameTable(props.database, props.object) },
+                    { label: "New Query", action: () => props.onNewQuery(props.database) },
+                  ]
+                : [
+                    {
+                      label: props.connection.engine === "mssql" ? "Select Top 1000 Rows" : "Select First 1000 Rows",
+                      action: () => props.onSelectTop(props.database, props.object),
+                    },
+                    {
+                      label: "Script as CREATE",
+                      action: () => props.onGenerateScript(props.database, props.object, "create"),
+                    },
+                    {
+                      label: "Script as INSERT",
+                      action: () => props.onGenerateScript(props.database, props.object, "insert"),
+                    },
+                    {
+                      label: "Script as CREATE and INSERT",
+                      action: () => props.onGenerateScript(props.database, props.object, "both"),
+                    },
+                    { label: "Rename", action: () => props.onRenameTable(props.database, props.object) },
+                    { label: "New Query", action: () => props.onNewQuery(props.database) },
+                  ],
           )
         }
       />

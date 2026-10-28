@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::model::{
     default_database, display_name, ColumnInfo, ColumnRef, ConnectResponse, Credentials, DbObject,
-    EngineKind, Profile, QueryMessage, QueryResponse,
+    EngineKind, Profile, QueryMessage, QueryResponse, ScriptResult,
 };
 use crate::profiles;
 use crate::state::{DbState, Session};
@@ -189,6 +189,47 @@ pub async fn script_routine(
         kind.trim(),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn generate_script(
+    state: State<'_, DbState>,
+    connection_id: String,
+    database: String,
+    schema: String,
+    name: String,
+    kind: String,
+    include_create: bool,
+    include_data: bool,
+) -> Result<ScriptResult, String> {
+    let session = session(&state, &connection_id).await?;
+    let creds = session.creds.clone();
+    let mut conn = session.conn.lock().await;
+    crate::db::generate_script(
+        &mut conn,
+        &creds,
+        database.trim(),
+        schema.trim(),
+        name.trim(),
+        kind.trim(),
+        include_create,
+        include_data,
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("Choose a file path.".into());
+    }
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    std::fs::write(path, contents).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

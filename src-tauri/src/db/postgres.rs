@@ -248,9 +248,10 @@ pub async fn script_table(
              FROM pg_index i
              JOIN pg_class c ON c.oid = i.indrelid
              JOIN pg_namespace n ON n.oid = c.relnamespace
-             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY (i.indkey)
+             JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
              WHERE i.indisprimary AND n.nspname = $1 AND c.relname = $2
-             ORDER BY array_position(i.indkey, a.attnum)",
+             ORDER BY k.ord",
             &[&schema, &name],
         )
         .await

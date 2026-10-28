@@ -77,6 +77,11 @@ export type QueryResponse = {
   elapsedMs: number;
 };
 
+export type ScriptResult = {
+  sql: string;
+  warnings: string[];
+};
+
 export type QueryTab = {
   id: string;
   title: string;

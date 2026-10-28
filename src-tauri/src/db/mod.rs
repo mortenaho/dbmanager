@@ -262,6 +262,225 @@ pub async fn script_routine(
     }
 }
 
+pub async fn generate_script(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    schema: &str,
+    name: &str,
+    kind: &str,
+    include_create: bool,
+    include_data: bool,
+) -> Result<ScriptResult, String> {
+    if database.is_empty() {
+        return Err("Choose a database first.".into());
+    }
+    if !include_create && !include_data {
+        return Err("Choose a script to generate.".into());
+    }
+    ensure_open(conn, creds).await?;
+    match conn {
+        EngineConn::Mysql(conn) => mysql::use_database(conn, database).await?,
+        EngineConn::Mssql(client) => mssql::use_database(client, database).await?,
+        EngineConn::Postgres(_) | EngineConn::Closed => {}
+    }
+    if matches!(conn, EngineConn::Closed) {
+        return Err("Connection is closed.".into());
+    }
+
+    let mut sql = script::script_header(database, include_data);
+    let mut warnings = Vec::new();
+    if kind == "database" {
+        let objects = list_objects(conn, creds, database).await?;
+        for object in objects {
+            match script_object(conn, creds, database, &object, include_create, include_data).await {
+                Ok((chunk, notes)) => {
+                    sql.push_str(&chunk);
+                    warnings.extend(notes);
+                }
+                Err(error) => {
+                    warnings.push(format!("{}.{}: {error}", object.schema, object.name));
+                    sql.push_str(&format!(
+                        "-- skipped {}.{}: {error}\n\n",
+                        object.schema, object.name
+                    ));
+                }
+            }
+        }
+    } else {
+        let schema = if schema.trim().is_empty() {
+            match creds.engine {
+                EngineKind::Postgres => "public".to_string(),
+                EngineKind::Mssql => "dbo".to_string(),
+                EngineKind::Mysql => database.to_string(),
+            }
+        } else {
+            schema.trim().to_string()
+        };
+        let name = require_ident(name, "Object")?;
+        let object = DbObject {
+            schema,
+            name,
+            kind: kind.to_string(),
+        };
+        let (chunk, notes) =
+            script_object(conn, creds, database, &object, include_create, include_data).await?;
+        sql.push_str(&chunk);
+        warnings.extend(notes);
+    }
+    if sql.trim().is_empty() {
+        return Err("Nothing was scripted.".into());
+    }
+    Ok(ScriptResult { sql, warnings })
+}
+
+async fn script_object(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    object: &DbObject,
+    include_create: bool,
+    include_data: bool,
+) -> Result<(String, Vec<String>), String> {
+    let mut sql = String::new();
+    let mut warnings = Vec::new();
+    match object.kind.as_str() {
+        "table" => {
+            if include_create {
+                sql.push_str(&create_table_sql(conn, creds, database, &object.schema, &object.name).await?);
+                sql.push_str("\n\n");
+            }
+            if include_data {
+                let identity_insert = mssql_identity(conn, database, &object.schema, &object.name).await;
+                let data = fetch_rows(conn, creds, database, &object.schema, &object.name).await?;
+                if data.truncated {
+                    let note = format!(
+                        "{}.{} was limited to {} rows.",
+                        object.schema,
+                        object.name,
+                        script::SCRIPT_ROW_LIMIT
+                    );
+                    warnings.push(note.clone());
+                    sql.push_str(&format!("-- {note}\n"));
+                }
+                sql.push_str(&script::insert_sql(
+                    creds.engine,
+                    &object.schema,
+                    &object.name,
+                    &data.columns,
+                    &data.rows,
+                    identity_insert,
+                ));
+                sql.push('\n');
+            }
+        }
+        "view" if include_create => {
+            if creds.engine == EngineKind::Mssql {
+                sql.push_str("GO\n");
+            }
+            sql.push_str(&create_view_sql(conn, creds, database, &object.schema, &object.name).await?);
+            sql.push_str("\n\n");
+            if creds.engine == EngineKind::Mssql {
+                sql.push_str("GO\n\n");
+            }
+        }
+        "procedure" | "function" if include_create => {
+            let body = script_routine(conn, creds, database, &object.schema, &object.name, &object.kind).await?;
+            match creds.engine {
+                EngineKind::Mssql => sql.push_str(&format!("GO\n{body}\nGO\n\n")),
+                EngineKind::Mysql => sql.push_str(&format!("DELIMITER $$\n{body}\n$$\nDELIMITER ;\n\n")),
+                EngineKind::Postgres => sql.push_str(&format!("{body};\n\n")),
+            }
+        }
+        _ => {}
+    }
+    Ok((sql, warnings))
+}
+
+async fn mssql_identity(conn: &mut EngineConn, database: &str, schema: &str, name: &str) -> bool {
+    let EngineConn::Mssql(client) = conn else {
+        return false;
+    };
+    match mssql::script_table(client, database, schema, name).await {
+        Ok((columns, _)) => columns.iter().any(|column| column.identity),
+        Err(_) => false,
+    }
+}
+
+async fn create_table_sql(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    schema: &str,
+    name: &str,
+) -> Result<String, String> {
+    match conn {
+        EngineConn::Postgres(clients) => {
+            let client = postgres::ensure(clients, creds, database).await?;
+            let (columns, primary_key) = postgres::script_table(client, schema, name).await?;
+            Ok(script::create_table_sql(
+                EngineKind::Postgres,
+                schema,
+                name,
+                &columns,
+                &primary_key,
+            ))
+        }
+        EngineConn::Mysql(conn) => mysql::script_create(conn, database, name, "table").await,
+        EngineConn::Mssql(client) => {
+            let (columns, primary_key) = mssql::script_table(client, database, schema, name).await?;
+            Ok(script::create_table_sql(
+                EngineKind::Mssql,
+                schema,
+                name,
+                &columns,
+                &primary_key,
+            ))
+        }
+        EngineConn::Closed => Err("Connection is closed.".into()),
+    }
+}
+
+async fn create_view_sql(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    schema: &str,
+    name: &str,
+) -> Result<String, String> {
+    match conn {
+        EngineConn::Postgres(clients) => {
+            let client = postgres::ensure(clients, creds, database).await?;
+            postgres::script_view(client, schema, name).await
+        }
+        EngineConn::Mysql(conn) => mysql::script_create(conn, database, name, "view").await,
+        EngineConn::Mssql(client) => mssql::script_routine(client, database, schema, name).await,
+        EngineConn::Closed => Err("Connection is closed.".into()),
+    }
+}
+
+async fn fetch_rows(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    schema: &str,
+    name: &str,
+) -> Result<script::TableData, String> {
+    match conn {
+        EngineConn::Postgres(clients) => {
+            let client = postgres::ensure(clients, creds, database).await?;
+            postgres::fetch_rows(client, schema, name, script::SCRIPT_ROW_LIMIT).await
+        }
+        EngineConn::Mysql(conn) => {
+            mysql::fetch_rows(conn, database, name, script::SCRIPT_ROW_LIMIT).await
+        }
+        EngineConn::Mssql(client) => {
+            mssql::fetch_rows(client, schema, name, script::SCRIPT_ROW_LIMIT).await
+        }
+        EngineConn::Closed => Err("Connection is closed.".into()),
+    }
+}
+
 pub async fn execute(
     conn: &mut EngineConn,
     creds: &Credentials,

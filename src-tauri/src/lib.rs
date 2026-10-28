@@ -10,6 +10,7 @@ use state::DbState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(DbState::default())
         .invoke_handler(tauri::generate_handler![
             commands::connect,
@@ -20,6 +21,8 @@ pub fn run() {
             commands::list_all_columns,
             commands::rename_object,
             commands::script_routine,
+            commands::generate_script,
+            commands::write_text_file,
             commands::execute_sql,
             commands::parse_sql,
             commands::load_profiles,
