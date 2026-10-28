@@ -229,9 +229,7 @@ export function ObjectExplorer({
                   connection.id,
                   database,
                   selectTopSql(connection.engine, object.schema, object.name),
-                  object.kind.toLowerCase() === "view"
-                    ? objectTabTitle(connection.engine, object.schema, object.name)
-                    : undefined,
+                  objectTabTitle(connection.engine, object.schema, object.name),
                 )
               }
               onRenameDatabase={(database) => onRenameDatabase(connection.id, database)}
