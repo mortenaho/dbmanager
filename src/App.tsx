@@ -30,6 +30,7 @@ import { ResultsPane } from "./components/ResultsPane";
 import {
   bindModelEngine,
   emptyCatalog,
+  bindEditorHistory,
   formatSql,
   insertSnippet,
   registerSqlEditor,
@@ -954,6 +955,8 @@ export default function App() {
                       onChange={(value) => patchTab(tab.id, { sql: value ?? "" })}
                       onMount={(editor) => {
                         editors.current.set(tab.id, editor);
+                        const unbindHistory = bindEditorHistory(editor);
+                        editor.onDidDispose(unbindHistory);
                         const model = editor.getModel();
                         const engine = connectionsRef.current.find((item) => item.id === tab.connectionId)?.engine;
                         if (model && engine) bindModelEngine(model, engine);

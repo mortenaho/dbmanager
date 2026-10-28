@@ -16,6 +16,8 @@ const SECTIONS: Array<{ title: string; rows: Array<{ action: string; keys: strin
   {
     title: "Editor",
     rows: [
+      { action: "Undo", keys: ["Ctrl+Z"] },
+      { action: "Redo", keys: ["Ctrl+Y"] },
       { action: "Suggestions", keys: ["Ctrl+Space"] },
       { action: "Find", keys: ["Ctrl+F"] },
       { action: "Snippets", keys: ["sel, ins, upd, join"] },

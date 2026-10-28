@@ -130,6 +130,24 @@ export function formatSql(sql: string, engine: EngineKind): string {
   }
 }
 
+export function bindEditorHistory(codeEditor: editor.IStandaloneCodeEditor): () => void {
+  const node = codeEditor.getDomNode();
+  if (!node) return () => undefined;
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const undo = event.code === "KeyZ" && !event.shiftKey;
+    const redo = (event.code === "KeyY" && !event.shiftKey) || (event.code === "KeyZ" && event.shiftKey);
+    if (!undo && !redo) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest(".find-widget, .monaco-findInput")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    codeEditor.trigger("keyboard", redo ? "redo" : "undo", null);
+  };
+  node.addEventListener("keydown", onKeyDown, true);
+  return () => node.removeEventListener("keydown", onKeyDown, true);
+}
+
 export function insertSnippet(codeEditor: editor.IStandaloneCodeEditor, snippet: string) {
   codeEditor.focus();
   const controller = codeEditor.getContribution("snippetController2") as { insert?: (template: string) => void } | null;
