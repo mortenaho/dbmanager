@@ -21,6 +21,7 @@ import {
 } from "./api";
 import { ConnectDialog } from "./components/ConnectDialog";
 import { DetailsPane, type DetailsTarget } from "./components/DetailsPane";
+import { DiagramDesigner } from "./components/DiagramDesigner";
 import { HelpDialog } from "./components/HelpDialog";
 import { HistoryDialog } from "./components/HistoryDialog";
 import { CheckIcon, FormatIcon, NewQueryIcon, PlayIcon, PlugIcon } from "./components/Icons";
@@ -38,12 +39,14 @@ import {
   setSqlCatalog,
   SQL_SNIPPETS,
 } from "./sql/editor";
+import { SAMPLE_DBML } from "./sql/dbml";
 import {
   engineLabel,
   errorText,
   objectTabTitle,
   selectTopSql,
   type Connection,
+  type EngineKind,
   type ConnectPayload,
   type DbObject,
   type HistoryDetail,
@@ -77,6 +80,10 @@ export default function App() {
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [details, setDetails] = useState<DetailsTarget | null>(null);
   const [detailsActive, setDetailsActive] = useState(false);
+  const [designOpen, setDesignOpen] = useState(false);
+  const [designActive, setDesignActive] = useState(false);
+  const [designDbml, setDesignDbml] = useState(SAMPLE_DBML);
+  const [designEngine, setDesignEngine] = useState<EngineKind>("postgres");
   const [filter, setFilter] = useState("");
   const [context, setContext] = useState<{ connectionId: string; database: string } | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
@@ -89,9 +96,13 @@ export default function App() {
   const contextRef = useRef(context);
   const detailsActiveRef = useRef(false);
   const detailsRef = useRef(details);
+  const designActiveRef = useRef(false);
+  const designRef = useRef(false);
   const editors = useRef(new Map<string, Parameters<OnMount>[0]>());
   detailsActiveRef.current = detailsActive;
   detailsRef.current = details;
+  designActiveRef.current = designActive;
+  designRef.current = designOpen;
   tabsRef.current = tabs;
   activeRef.current = activeTabId;
   connectionsRef.current = connections;
@@ -119,13 +130,17 @@ export default function App() {
   useEffect(() => {
     const tab = tabs.find((item) => item.id === activeTabId);
     const connection = connections.find((item) => item.id === tab?.connectionId);
-    const title = tab ? `${tab.title}${connection ? ` - ${connection.host}` : ""} - DB Manager` : "DB Manager";
+    const title = designActive
+      ? "Database Design - DB Manager"
+      : tab
+        ? `${tab.title}${connection ? ` - ${connection.host}` : ""} - DB Manager`
+        : "DB Manager";
     try {
       void getCurrentWindow().setTitle(title).catch(() => undefined);
     } catch {
       return;
     }
-  }, [tabs, activeTabId, connections]);
+  }, [tabs, activeTabId, connections, designActive]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -156,7 +171,8 @@ export default function App() {
         newQueryRef.current();
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "w" && !typing) {
         event.preventDefault();
-        if (detailsActiveRef.current) closeTab("details");
+        if (designActiveRef.current) closeTab("design");
+        else if (detailsActiveRef.current) closeTab("details");
         else if (activeRef.current) closeTab(activeRef.current);
       } else if (event.shiftKey && event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
@@ -201,6 +217,19 @@ export default function App() {
     setTabs((current) => [...current, tab]);
     setActiveTabId(tab.id);
     setDetailsActive(false);
+    setDesignActive(false);
+    setMenu(null);
+  }
+
+  function openDesign() {
+    if (!designOpen) {
+      const current = tabsRef.current.find((tab) => tab.id === activeRef.current);
+      const connection = connectionsRef.current.find((item) => item.id === current?.connectionId) ?? connectionsRef.current[0];
+      if (connection) setDesignEngine(connection.engine);
+    }
+    setDesignOpen(true);
+    setDesignActive(true);
+    setDetailsActive(false);
     setMenu(null);
   }
 
@@ -218,9 +247,16 @@ export default function App() {
   }
 
   function closeTab(id: string) {
+    if (id === "design") {
+      setDesignOpen(false);
+      setDesignActive(false);
+      if (tabsRef.current.length === 0 && detailsRef.current) setDetailsActive(true);
+      return;
+    }
     if (id === "details") {
       setDetails(null);
       setDetailsActive(false);
+      if (tabsRef.current.length === 0 && designRef.current) setDesignActive(true);
       return;
     }
     editors.current.delete(id);
@@ -230,12 +266,20 @@ export default function App() {
         if (active !== id) return active;
         return next.length > 0 ? next[next.length - 1].id : null;
       });
-      if (next.length === 0 && detailsRef.current) setDetailsActive(true);
+      if (next.length === 0) {
+        if (designRef.current) setDesignActive(true);
+        else if (detailsRef.current) setDetailsActive(true);
+      }
       return next;
     });
   }
 
   function closeTabs(keepId: string | null) {
+    if (keepId === "design") setDesignActive(true);
+    else {
+      setDesignOpen(false);
+      setDesignActive(false);
+    }
     if (keepId !== "details") {
       setDetails(null);
       setDetailsActive(false);
@@ -258,7 +302,7 @@ export default function App() {
   }
 
   async function runQuery() {
-    if (detailsActiveRef.current) return;
+    if (detailsActiveRef.current || designActiveRef.current) return;
     const tab = tabsRef.current.find((item) => item.id === activeRef.current);
     if (!tab || tab.running) return;
     if (!tab.connectionId) {
@@ -292,7 +336,7 @@ export default function App() {
   }
 
   async function parseQuery() {
-    if (detailsActiveRef.current) return;
+    if (detailsActiveRef.current || designActiveRef.current) return;
     const tab = tabsRef.current.find((item) => item.id === activeRef.current);
     if (!tab || tab.running) return;
     if (!tab.connectionId) {
@@ -318,7 +362,7 @@ export default function App() {
   }
 
   function formatQuery() {
-    if (detailsActiveRef.current) return;
+    if (detailsActiveRef.current || designActiveRef.current) return;
     const tab = tabsRef.current.find((item) => item.id === activeRef.current);
     if (!tab) return;
     const engine = connectionsRef.current.find((item) => item.id === tab.connectionId)?.engine ?? "postgres";
@@ -707,6 +751,7 @@ export default function App() {
   };
 
   const rowCount = activeTab?.resultSets.reduce((sum, set) => sum + set.rows.length, 0) ?? 0;
+  const editorLocked = detailsActive || designActive;
 
   return (
     <div
@@ -803,17 +848,17 @@ export default function App() {
           onHover={() => setMenu("Query")}
           onDismiss={() => setMenu(null)}
           items={[
-            { label: "Execute", hint: "F5", disabled: detailsActive || !activeTab || activeTab.running, action: () => void runQuery() },
+            { label: "Execute", hint: "F5", disabled: editorLocked || !activeTab || activeTab.running, action: () => void runQuery() },
             {
               label: "Parse",
               hint: "Ctrl+F5",
-              disabled: detailsActive || !activeTab || activeTab.running,
+              disabled: editorLocked || !activeTab || activeTab.running,
               action: () => void parseQuery(),
             },
             {
               label: "Format SQL",
               hint: "Shift+Alt+F",
-              disabled: detailsActive || !activeTab,
+              disabled: editorLocked || !activeTab,
               action: () => formatQuery(),
             },
             { label: "sep" },
@@ -835,7 +880,7 @@ export default function App() {
             ).map((snippet) => ({
               label: `Insert ${snippet.detail}`,
               hint: "",
-              disabled: !activeTab,
+              disabled: editorLocked || !activeTab,
               action: () => insertQuerySnippet(snippet.insertText),
             })),
           ]}
@@ -847,7 +892,11 @@ export default function App() {
           onOpen={() => setMenu(menu === "Tools" ? null : "Tools")}
           onHover={() => setMenu("Tools")}
           onDismiss={() => setMenu(null)}
-          items={[{ label: "Options...", hint: "", action: () => setSettingsOpen(true) }]}
+          items={[
+            { label: "Database Design", hint: "", action: () => openDesign() },
+            { label: "sep" },
+            { label: "Options...", hint: "", action: () => setSettingsOpen(true) },
+          ]}
         />
         <Menu
           label="Help"
@@ -872,14 +921,14 @@ export default function App() {
           <NewQueryIcon />
         </button>
         <span className="tool-sep" />
-        <button className="tool primary" title="Execute (F5)" disabled={detailsActive || !activeTab || activeTab.running} onClick={() => void runQuery()}>
+        <button className="tool primary" title="Execute (F5)" disabled={editorLocked || !activeTab || activeTab.running} onClick={() => void runQuery()}>
           <PlayIcon />
           <span>Execute</span>
         </button>
-        <button className="tool" title="Parse (Ctrl+F5)" disabled={detailsActive || !activeTab || activeTab.running} onClick={() => void parseQuery()}>
+        <button className="tool" title="Parse (Ctrl+F5)" disabled={editorLocked || !activeTab || activeTab.running} onClick={() => void parseQuery()}>
           <CheckIcon />
         </button>
-        <button className="tool" title="Format SQL (Shift+Alt+F)" disabled={detailsActive || !activeTab} onClick={() => formatQuery()}>
+        <button className="tool" title="Format SQL (Shift+Alt+F)" disabled={editorLocked || !activeTab} onClick={() => formatQuery()}>
           <FormatIcon />
         </button>
         <span className="tool-sep" />
@@ -907,7 +956,7 @@ export default function App() {
           className="db-select"
           value={barDatabase}
           disabled={!barConnection}
-          onChange={(event) => activeTab && !detailsActive && patchTab(activeTab.id, { database: event.target.value })}
+          onChange={(event) => activeTab && !editorLocked && patchTab(activeTab.id, { database: event.target.value })}
         >
           {(barConnection?.databases ?? []).map((database) => (
             <option key={database} value={database}>
@@ -960,17 +1009,20 @@ export default function App() {
               onShowDetails={(target) => {
                 setDetails(target);
                 setDetailsActive(true);
+                setDesignActive(false);
               }}
             />
             <div className="splitter-v" onMouseDown={(event) => startDrag("explorer", event)} />
           </>
         ) : null}
         <section className="document">
-          {tabs.length === 0 && !details ? (
+          {tabs.length === 0 && !details && !designOpen ? (
             <div className="blank">
               <div className="blank-card">
-                <img className="app-logo" src="/logo.png" alt="" width={72} height={72} />
-                <h1>DB Manager</h1>
+                <div className="blank-brand">
+                  <img className="app-logo" src="/logo.png" alt="" width={48} height={48} />
+                  <h1>DB Manager</h1>
+                </div>
                 <p>Connect to SQL Server, PostgreSQL, or MySQL, then write a query and press F5.</p>
                 <div className="blank-actions">
                   {recent[0] ? (
@@ -999,6 +1051,45 @@ export default function App() {
           ) : (
             <>
               <div className="doc-tabs">
+                {designOpen ? (
+                  <div
+                    className={`doc-tab ${designActive ? "active" : ""}`}
+                    onMouseDown={(event) => {
+                      event.stopPropagation();
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        return;
+                      }
+                      if (event.button !== 0) return;
+                      setDesignActive(true);
+                      setDetailsActive(false);
+                    }}
+                    onAuxClick={(event) => {
+                      if (event.button !== 1) return;
+                      event.preventDefault();
+                      closeTab("design");
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setDesignActive(true);
+                      setDetailsActive(false);
+                      setTabMenu({ x: event.clientX, y: event.clientY, id: "design" });
+                    }}
+                  >
+                    <span title="Database Design">Database Design</span>
+                    <button
+                      className="close"
+                      title="Close"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        closeTab("design");
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
                 {details ? (
                   <div
                     className={`doc-tab ${detailsActive ? "active" : ""}`}
@@ -1010,6 +1101,7 @@ export default function App() {
                       }
                       if (event.button !== 0) return;
                       setDetailsActive(true);
+                      setDesignActive(false);
                     }}
                     onAuxClick={(event) => {
                       if (event.button !== 1) return;
@@ -1020,6 +1112,7 @@ export default function App() {
                       event.preventDefault();
                       event.stopPropagation();
                       setDetailsActive(true);
+                      setDesignActive(false);
                       setTabMenu({ x: event.clientX, y: event.clientY, id: "details" });
                     }}
                   >
@@ -1039,7 +1132,7 @@ export default function App() {
                 {tabs.map((tab) => (
                   <div
                     key={tab.id}
-                    className={`doc-tab ${!detailsActive && tab.id === activeTabId ? "active" : ""}`}
+                    className={`doc-tab ${!editorLocked && tab.id === activeTabId ? "active" : ""}`}
                     onMouseDown={(event) => {
                       event.stopPropagation();
                       if (event.button === 1) {
@@ -1048,6 +1141,7 @@ export default function App() {
                       }
                       if (event.button !== 0) return;
                       setDetailsActive(false);
+                      setDesignActive(false);
                       setActiveTabId(tab.id);
                     }}
                     onAuxClick={(event) => {
@@ -1060,6 +1154,7 @@ export default function App() {
                       event.preventDefault();
                       event.stopPropagation();
                       setDetailsActive(false);
+                      setDesignActive(false);
                       setActiveTabId(tab.id);
                       setTabMenu({ x: event.clientX, y: event.clientY, id: tab.id });
                     }}
@@ -1078,7 +1173,19 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              {details && detailsActive ? (
+              {designOpen && designActive ? (
+                <DiagramDesigner
+                  dbml={designDbml}
+                  engine={designEngine}
+                  onDbml={setDesignDbml}
+                  onEngine={setDesignEngine}
+                  onImplement={(sql) => {
+                    const current = tabs.find((tab) => tab.id === activeTabId);
+                    const connection = connections.find((item) => item.id === current?.connectionId) ?? connections[0] ?? null;
+                    openTab(connection?.id ?? null, connection?.database ?? "", sql, "CreateSchema.sql");
+                  }}
+                />
+              ) : details && detailsActive ? (
                 <DetailsPane
                   target={details}
                   onOpen={(object) => {
@@ -1098,7 +1205,7 @@ export default function App() {
               ) : (
               <div className="editor-wrap">
                 {tabs.map((tab) => (
-                  <div key={tab.id} className={`editor-layer ${tab.id === activeTabId && !detailsActive ? "" : "hidden"}`}>
+                  <div key={tab.id} className={`editor-layer ${tab.id === activeTabId && !editorLocked ? "" : "hidden"}`}>
                     <Editor
                       language="sql"
                       theme="ssms"
@@ -1176,8 +1283,8 @@ export default function App() {
                 ))}
               </div>
               )}
-              {detailsActive ? null : <div className="splitter-h" onMouseDown={(event) => startDrag("results", event)} />}
-              {detailsActive ? null : (
+              {editorLocked ? null : <div className="splitter-h" onMouseDown={(event) => startDrag("results", event)} />}
+              {editorLocked ? null : (
                 <div style={{ height: resultsHeight, display: "flex", minHeight: 0 }}>
                   {activeTab ? (
                     <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
@@ -1305,7 +1412,7 @@ export default function App() {
             Close All
           </button>
           <button
-            disabled={tabs.length + (details ? 1 : 0) < 2}
+            disabled={tabs.length + (details ? 1 : 0) + (designOpen ? 1 : 0) < 2}
             onClick={() => {
               const id = tabMenu.id;
               setTabMenu(null);

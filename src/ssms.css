@@ -448,6 +448,13 @@ button:disabled { cursor: default; opacity: 0.55; }
   padding: 28px 28px 22px;
 }
 .app-logo { width: 72px; height: 72px; display: block; margin-bottom: 14px; }
+.blank-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.blank-brand .app-logo { width: 48px; height: 48px; margin: 0; flex: none; }
 .about .app-logo { width: 48px; height: 48px; margin: 2px 0 12px; }
 .about-brand {
   margin: 0 0 2px;
@@ -498,7 +505,7 @@ kbd {
   white-space: nowrap;
 }
 .help-credit { align-self: center; color: var(--muted); font-size: 12px; letter-spacing: 0.04em; }
-.blank-card h1 { margin: 0 0 6px; font-size: 22px; font-weight: 600; color: #0070c0; }
+.blank-card h1 { margin: 0; font-size: 22px; font-weight: 600; color: #0070c0; }
 .blank-card p { margin: 0 0 16px; color: var(--muted); line-height: 1.45; }
 .blank-actions {
   display: flex;
@@ -778,4 +785,143 @@ kbd {
   padding: 0 8px;
   background: #f3f3f3;
   border-top: 1px solid #d0d0d0;
+}
+
+.diagram-designer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+.diagram-bar {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(#fafafa, #eeeeee);
+  flex: none;
+}
+.diagram-bar .spacer { flex: 1; }
+.diagram-title { font-weight: 600; white-space: nowrap; flex: none; }
+.diagram-count {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diagram-go, .diagram-bar select { flex: none; }
+.diagram-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.diagram-bar select {
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text);
+}
+.diagram-go {
+  height: 24px;
+  padding: 0 12px;
+  background: var(--blue);
+  color: #fff;
+  border: 1px solid var(--blue-dark);
+  border-radius: 2px;
+}
+.diagram-go:disabled { opacity: 0.55; }
+.diagram-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.diagram-code {
+  flex: 0 0 42%;
+  width: 42%;
+  max-width: 520px;
+  min-width: 0;
+  resize: none;
+  border: 0;
+  border-right: 1px solid var(--border);
+  padding: 10px 12px;
+  font-family: Consolas, "Ubuntu Mono", "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  background: #fff;
+  white-space: pre;
+  overflow: auto;
+}
+.diagram-stage {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background-color: #f6f6f6;
+  background-image: radial-gradient(#d5d5d5 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+.diagram-sheet { position: relative; }
+.diagram-lines {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.diagram-lines path {
+  fill: none;
+  stroke: #6a6a6a;
+  stroke-width: 1.5;
+}
+.diagram-card {
+  position: absolute;
+  width: 240px;
+  background: #fff;
+  border: 1px solid #c8c8c8;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  user-select: none;
+}
+.diagram-card header {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  background: var(--blue);
+  color: #fff;
+  font-weight: 600;
+  cursor: grab;
+  border-radius: 3px 3px 0 0;
+}
+.diagram-col {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-top: 1px solid #f0f0f0;
+}
+.diagram-col .mark {
+  width: 16px;
+  flex: none;
+  color: var(--blue-dark);
+  font-size: 10px;
+  font-weight: 700;
+}
+.diagram-col .col-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diagram-col .type { margin-left: auto; color: var(--muted); white-space: nowrap; }
+.diagram-errors {
+  max-height: 72px;
+  overflow: auto;
+  flex: none;
+  background: #fff4f4;
+  color: #a4262c;
+  border-top: 1px solid #e1a2a2;
+  padding: 4px 8px;
+  font-size: 12px;
 }
