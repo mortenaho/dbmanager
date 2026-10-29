@@ -20,6 +20,7 @@ import {
   scriptRoutine,
 } from "./api";
 import { ConnectDialog } from "./components/ConnectDialog";
+import { DetailsPane, type DetailsTarget } from "./components/DetailsPane";
 import { HelpDialog } from "./components/HelpDialog";
 import { HistoryDialog } from "./components/HistoryDialog";
 import { CheckIcon, FormatIcon, NewQueryIcon, PlayIcon, PlugIcon } from "./components/Icons";
@@ -41,6 +42,7 @@ import {
   engineLabel,
   errorText,
   objectTabTitle,
+  selectTopSql,
   type Connection,
   type ConnectPayload,
   type DbObject,
@@ -72,6 +74,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [menu, setMenu] = useState<string | null>(null);
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [details, setDetails] = useState<DetailsTarget | null>(null);
+  const [detailsActive, setDetailsActive] = useState(false);
   const [filter, setFilter] = useState("");
   const [context, setContext] = useState<{ connectionId: string; database: string } | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
@@ -82,7 +87,11 @@ export default function App() {
   const activeRef = useRef(activeTabId);
   const connectionsRef = useRef(connections);
   const contextRef = useRef(context);
+  const detailsActiveRef = useRef(false);
+  const detailsRef = useRef(details);
   const editors = useRef(new Map<string, Parameters<OnMount>[0]>());
+  detailsActiveRef.current = detailsActive;
+  detailsRef.current = details;
   tabsRef.current = tabs;
   activeRef.current = activeTabId;
   connectionsRef.current = connections;
@@ -90,6 +99,12 @@ export default function App() {
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeConnection = connections.find((item) => item.id === activeTab?.connectionId) ?? null;
+  const detailsConnection =
+    detailsActive && details
+      ? connections.find((item) => item.id === details.connection.id) ?? details.connection
+      : null;
+  const barConnection = detailsConnection ?? activeConnection;
+  const barDatabase = detailsConnection ? details?.database ?? "" : activeTab?.database ?? "";
 
   useEffect(() => {
     editors.current.get(activeTabId ?? "")?.layout();
@@ -108,7 +123,7 @@ export default function App() {
     try {
       void getCurrentWindow().setTitle(title).catch(() => undefined);
     } catch {
-      // The page can be previewed in a browser, where the Tauri window API is absent.
+      return;
     }
   }, [tabs, activeTabId, connections]);
 
@@ -141,8 +156,8 @@ export default function App() {
         newQueryRef.current();
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "w" && !typing) {
         event.preventDefault();
-        const id = activeRef.current;
-        if (id) closeTab(id);
+        if (detailsActiveRef.current) closeTab("details");
+        else if (activeRef.current) closeTab(activeRef.current);
       } else if (event.shiftKey && event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
         formatRef.current();
@@ -185,6 +200,7 @@ export default function App() {
     const tab = makeTab(connectionId, database, sql, title);
     setTabs((current) => [...current, tab]);
     setActiveTabId(tab.id);
+    setDetailsActive(false);
     setMenu(null);
   }
 
@@ -202,6 +218,11 @@ export default function App() {
   }
 
   function closeTab(id: string) {
+    if (id === "details") {
+      setDetails(null);
+      setDetailsActive(false);
+      return;
+    }
     editors.current.delete(id);
     setTabs((current) => {
       const next = current.filter((tab) => tab.id !== id);
@@ -209,6 +230,25 @@ export default function App() {
         if (active !== id) return active;
         return next.length > 0 ? next[next.length - 1].id : null;
       });
+      if (next.length === 0 && detailsRef.current) setDetailsActive(true);
+      return next;
+    });
+  }
+
+  function closeTabs(keepId: string | null) {
+    if (keepId !== "details") {
+      setDetails(null);
+      setDetailsActive(false);
+    } else {
+      setDetailsActive(true);
+    }
+    setTabs((current) => {
+      const next = keepId === null ? [] : current.filter((tab) => tab.id === keepId);
+      const keep = new Set(next.map((tab) => tab.id));
+      for (const tab of current) {
+        if (!keep.has(tab.id)) editors.current.delete(tab.id);
+      }
+      setActiveTabId(keepId !== null && next.some((tab) => tab.id === keepId) ? keepId : null);
       return next;
     });
   }
@@ -218,6 +258,7 @@ export default function App() {
   }
 
   async function runQuery() {
+    if (detailsActiveRef.current) return;
     const tab = tabsRef.current.find((item) => item.id === activeRef.current);
     if (!tab || tab.running) return;
     if (!tab.connectionId) {
@@ -251,6 +292,7 @@ export default function App() {
   }
 
   async function parseQuery() {
+    if (detailsActiveRef.current) return;
     const tab = tabsRef.current.find((item) => item.id === activeRef.current);
     if (!tab || tab.running) return;
     if (!tab.connectionId) {
@@ -276,6 +318,7 @@ export default function App() {
   }
 
   function formatQuery() {
+    if (detailsActiveRef.current) return;
     const tab = tabsRef.current.find((item) => item.id === activeRef.current);
     if (!tab) return;
     const engine = connectionsRef.current.find((item) => item.id === tab.connectionId)?.engine ?? "postgres";
@@ -604,17 +647,23 @@ export default function App() {
   useEffect(() => {
     const connectionId = activeTab?.connectionId;
     const database = activeTab?.database ?? "";
-    const engine = connections.find((item) => item.id === connectionId)?.engine;
+    const connection = connections.find((item) => item.id === connectionId);
+    const engine = connection?.engine;
     if (!connectionId || !database || !engine) {
       setSqlCatalog(emptyCatalog(engine ?? "postgres"));
       return;
     }
+    const known = connection?.databases ?? [];
+    const databases =
+      database && !known.some((item) => item.toLowerCase() === database.toLowerCase()) ? [database, ...known] : known;
     let cancel = false;
     Promise.all([listObjects(connectionId, database), listAllColumns(connectionId, database)])
       .then(([objects, columns]) => {
         if (cancel) return;
         setSqlCatalog({
           engine,
+          database,
+          databases,
           tables: objects.filter((object) => object.kind === "table" || object.kind === "view"),
           routines: objects.filter((object) => object.kind === "procedure" || object.kind === "function"),
           columns,
@@ -660,7 +709,13 @@ export default function App() {
   const rowCount = activeTab?.resultSets.reduce((sum, set) => sum + set.rows.length, 0) ?? 0;
 
   return (
-    <div className="ssms" onMouseDown={() => setMenu(null)}>
+    <div
+      className="ssms"
+      onMouseDown={() => {
+        setMenu(null);
+        setTabMenu(null);
+      }}
+    >
       <div className="menu-bar">
         <Menu
           label="File"
@@ -748,17 +803,17 @@ export default function App() {
           onHover={() => setMenu("Query")}
           onDismiss={() => setMenu(null)}
           items={[
-            { label: "Execute", hint: "F5", disabled: !activeTab || activeTab.running, action: () => void runQuery() },
+            { label: "Execute", hint: "F5", disabled: detailsActive || !activeTab || activeTab.running, action: () => void runQuery() },
             {
               label: "Parse",
               hint: "Ctrl+F5",
-              disabled: !activeTab || activeTab.running,
+              disabled: detailsActive || !activeTab || activeTab.running,
               action: () => void parseQuery(),
             },
             {
               label: "Format SQL",
               hint: "Shift+Alt+F",
-              disabled: !activeTab,
+              disabled: detailsActive || !activeTab,
               action: () => formatQuery(),
             },
             { label: "sep" },
@@ -817,21 +872,21 @@ export default function App() {
           <NewQueryIcon />
         </button>
         <span className="tool-sep" />
-        <button className="tool primary" title="Execute (F5)" disabled={!activeTab || activeTab.running} onClick={() => void runQuery()}>
+        <button className="tool primary" title="Execute (F5)" disabled={detailsActive || !activeTab || activeTab.running} onClick={() => void runQuery()}>
           <PlayIcon />
           <span>Execute</span>
         </button>
-        <button className="tool" title="Parse (Ctrl+F5)" disabled={!activeTab || activeTab.running} onClick={() => void parseQuery()}>
+        <button className="tool" title="Parse (Ctrl+F5)" disabled={detailsActive || !activeTab || activeTab.running} onClick={() => void parseQuery()}>
           <CheckIcon />
         </button>
-        <button className="tool" title="Format SQL (Shift+Alt+F)" disabled={!activeTab} onClick={() => formatQuery()}>
+        <button className="tool" title="Format SQL (Shift+Alt+F)" disabled={detailsActive || !activeTab} onClick={() => formatQuery()}>
           <FormatIcon />
         </button>
         <span className="tool-sep" />
         <select
           className="conn-select"
-          value={activeTab?.connectionId ?? ""}
-          disabled={!activeTab}
+          value={detailsConnection ? detailsConnection.id : activeTab?.connectionId ?? ""}
+          disabled={!activeTab && !detailsConnection}
           onChange={(event) => {
             if (!activeTab) return;
             const connection = connections.find((item) => item.id === event.target.value);
@@ -850,23 +905,23 @@ export default function App() {
         </select>
         <select
           className="db-select"
-          value={activeTab?.database ?? ""}
-          disabled={!activeConnection}
-          onChange={(event) => activeTab && patchTab(activeTab.id, { database: event.target.value })}
+          value={barDatabase}
+          disabled={!barConnection}
+          onChange={(event) => activeTab && !detailsActive && patchTab(activeTab.id, { database: event.target.value })}
         >
-          {(activeConnection?.databases ?? []).map((database) => (
+          {(barConnection?.databases ?? []).map((database) => (
             <option key={database} value={database}>
               {database}
             </option>
           ))}
-          {activeTab && activeTab.database && !activeConnection?.databases.includes(activeTab.database) ? (
-            <option value={activeTab.database}>{activeTab.database}</option>
+          {barDatabase && !barConnection?.databases.includes(barDatabase) ? (
+            <option value={barDatabase}>{barDatabase}</option>
           ) : null}
         </select>
         <span className="spacer" />
         <span className="server-chip">
-          {activeConnection
-            ? `${activeConnection.username}@${activeConnection.host},${activeConnection.port}`
+          {barConnection
+            ? `${barConnection.username}@${barConnection.host},${barConnection.port}`
             : "Disconnected"}
         </span>
       </div>
@@ -885,7 +940,13 @@ export default function App() {
               onRefresh={(id) => void refreshConnection(id)}
               onNewQuery={(connectionId, database) => newQuery(connectionId, database)}
               onSelectTop={(connectionId, database, sql, title) => openTab(connectionId, database, sql, title)}
-              onSelectContext={(connectionId, database) => setContext({ connectionId, database })}
+              onSelectContext={(connectionId, database) =>
+                setContext((current) =>
+                  current?.connectionId === connectionId && current.database === database
+                    ? current
+                    : { connectionId, database },
+                )
+              }
               onRenameDatabase={(connectionId, database) =>
                 setRename({ kind: "database", connectionId, database })
               }
@@ -896,12 +957,16 @@ export default function App() {
               onGenerateScript={(connectionId, database, object, mode) =>
                 void runGenerate(connectionId, database, object, mode)
               }
+              onShowDetails={(target) => {
+                setDetails(target);
+                setDetailsActive(true);
+              }}
             />
             <div className="splitter-v" onMouseDown={(event) => startDrag("explorer", event)} />
           </>
         ) : null}
         <section className="document">
-          {tabs.length === 0 ? (
+          {tabs.length === 0 && !details ? (
             <div className="blank">
               <div className="blank-card">
                 <img className="app-logo" src="/logo.png" alt="" width={72} height={72} />
@@ -934,13 +999,69 @@ export default function App() {
           ) : (
             <>
               <div className="doc-tabs">
+                {details ? (
+                  <div
+                    className={`doc-tab ${detailsActive ? "active" : ""}`}
+                    onMouseDown={(event) => {
+                      event.stopPropagation();
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        return;
+                      }
+                      if (event.button !== 0) return;
+                      setDetailsActive(true);
+                    }}
+                    onAuxClick={(event) => {
+                      if (event.button !== 1) return;
+                      event.preventDefault();
+                      closeTab("details");
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setDetailsActive(true);
+                      setTabMenu({ x: event.clientX, y: event.clientY, id: "details" });
+                    }}
+                  >
+                    <span title="Object Explorer Details">Object Explorer Details</span>
+                    <button
+                      className="close"
+                      title="Close"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        closeTab("details");
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
                 {tabs.map((tab) => (
                   <div
                     key={tab.id}
-                    className={`doc-tab ${tab.id === activeTabId ? "active" : ""}`}
+                    className={`doc-tab ${!detailsActive && tab.id === activeTabId ? "active" : ""}`}
                     onMouseDown={(event) => {
                       event.stopPropagation();
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        return;
+                      }
+                      if (event.button !== 0) return;
+                      setDetailsActive(false);
                       setActiveTabId(tab.id);
+                    }}
+                    onAuxClick={(event) => {
+                      if (event.button !== 1) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      closeTab(tab.id);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setDetailsActive(false);
+                      setActiveTabId(tab.id);
+                      setTabMenu({ x: event.clientX, y: event.clientY, id: tab.id });
                     }}
                   >
                     <span title={tab.title}>{tab.title}</span>
@@ -957,9 +1078,27 @@ export default function App() {
                   </div>
                 ))}
               </div>
+              {details && detailsActive ? (
+                <DetailsPane
+                  target={details}
+                  onOpen={(object) => {
+                    if (!details.connection.id) return;
+                    if (details.folder === "procedure" || details.folder === "function") {
+                      void openRoutine(details.connection.id, details.database, object);
+                    } else {
+                      openTab(
+                        details.connection.id,
+                        details.database,
+                        selectTopSql(details.connection.engine, object.schema, object.name),
+                        objectTabTitle(details.connection.engine, object.schema, object.name),
+                      );
+                    }
+                  }}
+                />
+              ) : (
               <div className="editor-wrap">
                 {tabs.map((tab) => (
-                  <div key={tab.id} className={`editor-layer ${tab.id === activeTabId ? "" : "hidden"}`}>
+                  <div key={tab.id} className={`editor-layer ${tab.id === activeTabId && !detailsActive ? "" : "hidden"}`}>
                     <Editor
                       language="sql"
                       theme="ssms"
@@ -1022,27 +1161,37 @@ export default function App() {
                         suggestOnTriggerCharacters: true,
                         acceptSuggestionOnEnter: "on",
                         quickSuggestions: { other: true, comments: false, strings: false },
-                        suggest: { preview: true, showSnippets: true, showFunctions: true, showFields: true },
+                        suggest: {
+                          preview: true,
+                          showSnippets: true,
+                          showFunctions: true,
+                          showFields: true,
+                          filterGraceful: false,
+                          matchOnWordStartOnly: true,
+                        },
                         renderWhitespace: "selection",
                       }}
                     />
                   </div>
                 ))}
               </div>
-              <div className="splitter-h" onMouseDown={(event) => startDrag("results", event)} />
-              <div style={{ height: resultsHeight, display: "flex", minHeight: 0 }}>
-                {activeTab ? (
-                  <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
-                    <ResultsPane
-                      resultSets={activeTab.resultSets}
-                      messages={activeTab.messages}
-                      activePane={activeTab.activePane}
-                      onPane={(pane) => patchTab(activeTab.id, { activePane: pane })}
-                      onExport={(format) => void exportResults(format)}
-                    />
-                  </div>
-                ) : null}
-              </div>
+              )}
+              {detailsActive ? null : <div className="splitter-h" onMouseDown={(event) => startDrag("results", event)} />}
+              {detailsActive ? null : (
+                <div style={{ height: resultsHeight, display: "flex", minHeight: 0 }}>
+                  {activeTab ? (
+                    <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
+                      <ResultsPane
+                        resultSets={activeTab.resultSets}
+                        messages={activeTab.messages}
+                        activePane={activeTab.activePane}
+                        onPane={(pane) => patchTab(activeTab.id, { activePane: pane })}
+                        onExport={(format) => void exportResults(format)}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </>
           )}
         </section>
@@ -1051,11 +1200,11 @@ export default function App() {
       <footer className="status-bar">
         <span>{activeTab?.running ? "Executing..." : notice || "Ready"}</span>
         <span>
-          {activeConnection
-            ? `${engineLabel(activeConnection.engine)} | ${activeConnection.host}`
+          {barConnection
+            ? `${engineLabel(barConnection.engine)} | ${barConnection.host}`
             : "No connection"}
         </span>
-        <span>{activeTab?.database || "no database"}</span>
+        <span>{barDatabase || "no database"}</span>
         <span className="right">
           <span>{activeTab?.elapsedMs != null ? `${activeTab.elapsedMs} ms` : ""}</span>
           <span>{activeTab ? `${rowCount.toLocaleString()} rows` : ""}</span>
@@ -1129,6 +1278,42 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      ) : null}
+      {tabMenu ? (
+        <div
+          className="context-menu"
+          style={{ left: tabMenu.x, top: tabMenu.y }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button
+            onClick={() => {
+              const id = tabMenu.id;
+              setTabMenu(null);
+              closeTab(id);
+            }}
+          >
+            Close
+          </button>
+          <button
+            onClick={() => {
+              setTabMenu(null);
+              closeTabs(null);
+            }}
+          >
+            Close All
+          </button>
+          <button
+            disabled={tabs.length + (details ? 1 : 0) < 2}
+            onClick={() => {
+              const id = tabMenu.id;
+              setTabMenu(null);
+              closeTabs(id);
+            }}
+          >
+            Close All But This
+          </button>
         </div>
       ) : null}
     </div>

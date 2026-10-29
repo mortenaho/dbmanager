@@ -70,6 +70,33 @@ pub struct DbObject {
     pub schema: String,
     pub name: String,
     pub kind: String,
+    #[serde(default)]
+    pub created: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_count: Option<i64>,
+}
+
+impl DbObject {
+    pub fn plain(schema: impl Into<String>, name: impl Into<String>, kind: impl Into<String>) -> Self {
+        Self {
+            schema: schema.into(),
+            name: name.into(),
+            kind: kind.into(),
+            created: String::new(),
+            row_count: None,
+        }
+    }
+}
+
+pub fn parse_row_count(value: Option<String>) -> Option<i64> {
+    let text = value?;
+    let head = text.trim().split(['.', 'e', 'E']).next().unwrap_or("");
+    let digits: String = head.chars().filter(|ch| ch.is_ascii_digit() || *ch == '-').collect();
+    if digits.is_empty() || digits == "-" {
+        return None;
+    }
+    let parsed = digits.parse::<i64>().ok()?;
+    if parsed < 0 { None } else { Some(parsed) }
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { listColumns, listObjects } from "../api";
 import {
   errorText,
@@ -43,6 +43,13 @@ type Props = {
     object: DbObject | null,
     mode: "create" | "insert" | "both" | "schema" | "backup",
   ) => void;
+  onShowDetails: (target: {
+    connection: Connection;
+    database: string;
+    folder: "table" | "view" | "procedure" | "function";
+    title: string;
+    objects: DbObject[];
+  }) => void;
 };
 
 type MenuState = {
@@ -67,6 +74,7 @@ export function ObjectExplorer({
   onRenameTable,
   onScriptRoutine,
   onGenerateScript,
+  onShowDetails,
 }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState("");
@@ -77,8 +85,18 @@ export function ObjectExplorer({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const connectionsRef = useRef(connections);
   const expandedRef = useRef(expanded);
+  const objectsRef = useRef(objects);
+  const shownFolder = useRef<{
+    connectionId: string;
+    database: string;
+    folder: "table" | "view" | "procedure" | "function";
+    title: string;
+  } | null>(null);
+  const showDetailsRef = useRef(onShowDetails);
+  showDetailsRef.current = onShowDetails;
   connectionsRef.current = connections;
   expandedRef.current = expanded;
+  objectsRef.current = objects;
 
   useEffect(() => {
     const close = () => setMenu(null);
@@ -156,6 +174,193 @@ export function ObjectExplorer({
   }
 
   const needle = filter.trim().toLowerCase();
+  const rows = useMemo(
+    () =>
+      buildTree({
+        connections,
+        needle,
+        expanded,
+        objects,
+        columns,
+        loading,
+        errors,
+      }),
+    [columns, connections, errors, expanded, loading, needle, objects],
+  );
+  const treeRef = useRef<HTMLDivElement>(null);
+  const [startIndex, setStartIndex] = useState(0);
+  const [viewport, setViewport] = useState(480);
+
+  useEffect(() => {
+    const node = treeRef.current;
+    if (!node) return;
+    const measure = () => setViewport(node.clientHeight || 480);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [connections.length]);
+
+  const start = Math.min(startIndex, Math.max(0, rows.length - 1));
+  const visibleCount = Math.ceil(viewport / TREE_ROW) + TREE_OVERSCAN * 2;
+  const visible = rows.slice(start, start + visibleCount);
+
+  function publishDetails(
+    connection: Connection,
+    database: string,
+    folder: "table" | "view" | "procedure" | "function",
+    title: string,
+    source: Record<string, DbObject[]>,
+  ) {
+    shownFolder.current = { connectionId: connection.id, database, folder, title };
+    showDetailsRef.current({
+      connection,
+      database,
+      folder,
+      title,
+      objects: (source[`${connection.id}:${database}`] ?? []).filter((object) => object.kind === folder),
+    });
+  }
+
+  useEffect(() => {
+    const current = shownFolder.current;
+    if (!current) return;
+    const connection = connections.find((item) => item.id === current.connectionId);
+    if (!connection) return;
+    showDetailsRef.current({
+      connection,
+      database: current.database,
+      folder: current.folder,
+      title: current.title,
+      objects: (objects[`${current.connectionId}:${current.database}`] ?? []).filter((object) => object.kind === current.folder),
+    });
+  }, [connections, objects]);
+
+  function onRowClick(item: TreeItem) {
+    setSelected(item.id);
+    if (!item.canExpand) {
+      if (item.kind.type === "object") onSelectContext(item.kind.connection.id, item.kind.database);
+      return;
+    }
+    const opening = !item.open;
+    toggle(item.id);
+    if (item.kind.type === "server") {
+      onSelectContext(item.kind.connection.id, item.kind.connection.database);
+    } else if (item.kind.type === "database") {
+      onSelectContext(item.kind.connection.id, item.kind.database);
+      if (opening) void loadObjects(item.kind.connection, item.kind.database);
+    } else if (item.kind.type === "folder") {
+      const { connection, database, folder, title } = item.kind;
+      onSelectContext(connection.id, database);
+      publishDetails(connection, database, folder, title, objects);
+      if (!objects[`${connection.id}:${database}`]) void loadObjects(connection, database);
+    } else if (item.kind.type === "object" && opening) {
+      void loadColumns(item.kind.connection, item.kind.database, item.kind.object);
+    }
+  }
+
+  function onRowDoubleClick(item: TreeItem) {
+    if (item.kind.type === "database") {
+      onNewQuery(item.kind.connection.id, item.kind.database);
+    } else if (item.kind.type === "object") {
+      const { connection, database, object, folder } = item.kind;
+      if (folder === "procedure" || folder === "function") onScriptRoutine(connection.id, database, object);
+      else {
+        onSelectTop(
+          connection.id,
+          database,
+          selectTopSql(connection.engine, object.schema, object.name),
+          objectTabTitle(connection.engine, object.schema, object.name),
+        );
+      }
+    }
+  }
+
+  function onRowMenu(event: MouseEvent, item: TreeItem) {
+    if (item.kind.type === "server") {
+      const connection = item.kind.connection;
+      openMenu(event, [
+        { label: "New Query", action: () => onNewQuery(connection.id, connection.database) },
+        { label: "Refresh", action: () => refreshConnection(connection.id) },
+        { label: "Disconnect", action: () => onDisconnect(connection.id) },
+      ]);
+    } else if (item.kind.type === "database") {
+      const { connection, database } = item.kind;
+      openMenu(event, [
+        { label: "New Query", action: () => onNewQuery(connection.id, database) },
+        { label: "Generate Scripts", action: () => onGenerateScript(connection.id, database, null, "schema") },
+        { label: "Backup Database", action: () => onGenerateScript(connection.id, database, null, "backup") },
+        { label: "Rename", action: () => onRenameDatabase(connection.id, database) },
+        { label: "Refresh", action: () => refreshConnection(connection.id) },
+      ]);
+    } else if (item.kind.type === "object") {
+      const { connection, database, object, folder } = item.kind;
+      const routine = folder === "procedure" || folder === "function";
+      const topLabel = connection.engine === "mssql" ? "Select Top 1000 Rows" : "Select First 1000 Rows";
+      openMenu(
+        event,
+        routine
+          ? [
+              { label: "Script as CREATE", action: () => onScriptRoutine(connection.id, database, object) },
+              { label: "New Query", action: () => onNewQuery(connection.id, database) },
+            ]
+          : folder === "view"
+            ? [
+                {
+                  label: topLabel,
+                  action: () =>
+                    onSelectTop(
+                      connection.id,
+                      database,
+                      selectTopSql(connection.engine, object.schema, object.name),
+                      objectTabTitle(connection.engine, object.schema, object.name),
+                    ),
+                },
+                { label: "Script as CREATE", action: () => onGenerateScript(connection.id, database, object, "create") },
+                { label: "Rename", action: () => onRenameTable(connection.id, database, object.schema, object.name) },
+                { label: "New Query", action: () => onNewQuery(connection.id, database) },
+              ]
+            : [
+                {
+                  label: topLabel,
+                  action: () =>
+                    onSelectTop(
+                      connection.id,
+                      database,
+                      selectTopSql(connection.engine, object.schema, object.name),
+                      objectTabTitle(connection.engine, object.schema, object.name),
+                    ),
+                },
+                { label: "Script as CREATE", action: () => onGenerateScript(connection.id, database, object, "create") },
+                { label: "Script as INSERT", action: () => onGenerateScript(connection.id, database, object, "insert") },
+                {
+                  label: "Script as CREATE and INSERT",
+                  action: () => onGenerateScript(connection.id, database, object, "both"),
+                },
+                { label: "Rename", action: () => onRenameTable(connection.id, database, object.schema, object.name) },
+                { label: "New Query", action: () => onNewQuery(connection.id, database) },
+              ],
+      );
+    }
+  }
+
+  function refreshConnection(connectionId: string) {
+    setObjects((current) => {
+      const next = { ...current };
+      Object.keys(next).forEach((key) => {
+        if (key.startsWith(`${connectionId}:`)) delete next[key];
+      });
+      return next;
+    });
+    setColumns((current) => {
+      const next = { ...current };
+      Object.keys(next).forEach((key) => {
+        if (key.startsWith(`${connectionId}:`)) delete next[key];
+      });
+      return next;
+    });
+    onRefresh(connectionId);
+  }
 
   return (
     <aside className="explorer" style={{ width }}>
@@ -183,65 +388,37 @@ export function ObjectExplorer({
         value={filter}
         onChange={(event) => onFilter(event.target.value)}
       />
-      <div className="tree">
+      <div
+        className="tree"
+        ref={treeRef}
+        onScroll={(event) => {
+          const next = Math.max(0, Math.floor(event.currentTarget.scrollTop / TREE_ROW) - TREE_OVERSCAN);
+          setStartIndex((current) => (current === next ? current : next));
+        }}
+      >
         {connections.length === 0 ? (
           <div className="tree-muted">No servers connected. Click Connect.</div>
         ) : (
-          connections.map((connection) => (
-            <ServerNode
-              key={connection.id}
-              connection={connection}
-              needle={needle}
-              expanded={expanded}
-              selected={selected}
-              objects={objects}
-              columns={columns}
-              loading={loading}
-              errors={errors}
-              onToggle={(id) => {
-                toggle(id);
-                setSelected(id);
-              }}
-              onSelect={(id, database) => {
-                setSelected(id);
-                onSelectContext(connection.id, database);
-              }}
-              onExpandDatabase={(database) => {
-                const folder = `tables:${connection.id}:${database}`;
-                if (!expanded.has(folder)) void loadObjects(connection, database);
-              }}
-              onExpandObject={(database, object) => void loadColumns(connection, database, object)}
-              onMenu={openMenu}
-              onDisconnect={() => onDisconnect(connection.id)}
-              onRefresh={() => {
-                setObjects((current) => {
-                  const next = { ...current };
-                  Object.keys(next).forEach((key) => {
-                    if (key.startsWith(`${connection.id}:`)) delete next[key];
-                  });
-                  return next;
-                });
-                onRefresh(connection.id);
-              }}
-              onNewQuery={(database) => onNewQuery(connection.id, database)}
-              onSelectTop={(database, object) =>
-                onSelectTop(
-                  connection.id,
-                  database,
-                  selectTopSql(connection.engine, object.schema, object.name),
-                  objectTabTitle(connection.engine, object.schema, object.name),
-                )
-              }
-              onRenameDatabase={(database) => onRenameDatabase(connection.id, database)}
-              onRenameTable={(database, object) =>
-                onRenameTable(connection.id, database, object.schema, object.name)
-              }
-              onScriptRoutine={(database, object) => onScriptRoutine(connection.id, database, object)}
-              onGenerateScript={(database, object, mode) =>
-                onGenerateScript(connection.id, database, object, mode)
-              }
-            />
-          ))
+          <div className="tree-canvas" style={{ height: rows.length * TREE_ROW }}>
+            <div className="tree-window" style={{ top: start * TREE_ROW }}>
+              {visible.map((item) => (
+                <TreeRow
+                  key={item.id}
+                  item={item}
+                  selected={selected === item.id}
+                  onClick={() => onRowClick(item)}
+                  onDoubleClick={
+                    item.kind.type === "database" || item.kind.type === "object" ? () => onRowDoubleClick(item) : undefined
+                  }
+                  onContextMenu={
+                    item.kind.type === "server" || item.kind.type === "database" || item.kind.type === "object"
+                      ? (event) => onRowMenu(event, item)
+                      : undefined
+                  }
+                />
+              ))}
+            </div>
+          </div>
         )}
       </div>
       {menu ? (
@@ -263,351 +440,208 @@ export function ObjectExplorer({
   );
 }
 
-function ServerNode(props: {
-  connection: Connection;
+const TREE_ROW = 22;
+const TREE_OVERSCAN = 10;
+
+type IconName = "server" | "database" | "folder" | "table" | "view" | "procedure" | "function" | "column" | "none";
+
+const ICONS: Record<IconName, ReactNode> = {
+  server: <ServerIcon />,
+  database: <DatabaseIcon />,
+  folder: <FolderIcon />,
+  table: <TableIcon />,
+  view: <ViewIcon />,
+  procedure: <ProcedureIcon />,
+  function: <FunctionIcon />,
+  column: <ColumnIcon />,
+  none: null,
+};
+
+type NodeKind =
+  | { type: "server"; connection: Connection }
+  | { type: "database"; connection: Connection; database: string }
+  | {
+      type: "folder";
+      connection: Connection;
+      database: string;
+      folder: ObjectFolder;
+      title: string;
+    }
+  | { type: "object"; connection: Connection; database: string; object: DbObject; folder: ObjectFolder }
+  | { type: "column" }
+  | { type: "status" };
+
+type ObjectFolder = "table" | "view" | "procedure" | "function";
+
+type TreeItem = {
+  id: string;
+  depth: number;
+  label: string;
+  icon: IconName;
+  canExpand: boolean;
+  open: boolean;
+  tone?: "status" | "error";
+  kind: NodeKind;
+};
+
+function buildTree(input: {
+  connections: Connection[];
   needle: string;
   expanded: Set<string>;
-  selected: string;
   objects: Record<string, DbObject[]>;
   columns: Record<string, ColumnInfo[]>;
   loading: Set<string>;
   errors: Record<string, string>;
-  onToggle: (id: string) => void;
-  onSelect: (id: string, database: string) => void;
-  onExpandDatabase: (database: string) => void;
-  onExpandObject: (database: string, object: DbObject) => void;
-  onMenu: (event: MouseEvent, items: MenuState["items"]) => void;
-  onDisconnect: () => void;
-  onRefresh: () => void;
-  onNewQuery: (database: string) => void;
-  onSelectTop: (database: string, object: DbObject) => void;
-  onRenameDatabase: (database: string) => void;
-  onRenameTable: (database: string, object: DbObject) => void;
-  onScriptRoutine: (database: string, object: DbObject) => void;
-  onGenerateScript: (
-    database: string,
-    object: DbObject | null,
-    mode: "create" | "insert" | "both" | "schema" | "backup",
-  ) => void;
-}) {
-  const id = `server:${props.connection.id}`;
-  const open = props.expanded.has(id);
-  const databases = props.connection.databases.filter((name) => !props.needle || name.toLowerCase().includes(props.needle) || props.connection.name.toLowerCase().includes(props.needle));
-  return (
-    <div>
-      <Row
-        depth={0}
-        id={id}
-        selected={props.selected}
-        open={open}
-        canExpand
-        icon={<ServerIcon />}
-        label={`${props.connection.name} (${label(props.connection.engine)})`}
-        onClick={() => {
-          props.onToggle(id);
-          props.onSelect(id, props.connection.database);
-        }}
-        onContextMenu={(event) =>
-          props.onMenu(event, [
-            { label: "New Query", action: () => props.onNewQuery(props.connection.database) },
-            { label: "Refresh", action: props.onRefresh },
-            { label: "Disconnect", action: props.onDisconnect },
-          ])
-        }
-      />
-      {open
-        ? databases.map((database) => (
-            <DatabaseNode key={database} database={database} {...props} />
-          ))
-        : null}
-    </div>
-  );
+}): TreeItem[] {
+  const rows: TreeItem[] = [];
+  for (const connection of input.connections) {
+    const serverId = `server:${connection.id}`;
+    const serverOpen = input.expanded.has(serverId);
+    rows.push({
+      id: serverId,
+      depth: 0,
+      label: `${connection.name} (${engineLabel(connection.engine)})`,
+      icon: "server",
+      canExpand: true,
+      open: serverOpen,
+      kind: { type: "server", connection },
+    });
+    if (!serverOpen) continue;
+    const databases = connection.databases.filter(
+      (name) =>
+        !input.needle ||
+        name.toLowerCase().includes(input.needle) ||
+        connection.name.toLowerCase().includes(input.needle),
+    );
+    for (const database of databases) {
+      const dbId = `db:${connection.id}:${database}`;
+      const key = `${connection.id}:${database}`;
+      const dbOpen = input.expanded.has(dbId);
+      rows.push({
+        id: dbId,
+        depth: 1,
+        label: database,
+        icon: "database",
+        canExpand: true,
+        open: dbOpen,
+        kind: { type: "database", connection, database },
+      });
+      if (!dbOpen) continue;
+      if (input.errors[key]) {
+        rows.push(statusRow(`error:${key}`, 2, input.errors[key], "error"));
+      }
+      if (input.loading.has(key)) {
+        rows.push(statusRow(`loading:${key}`, 2, "Loading...", "status"));
+      }
+      const items = input.objects[key] ?? [];
+      pushFolder(rows, input, connection, database, key, "Tables", "tables", "table", items);
+      pushFolder(rows, input, connection, database, key, "Views", "views", "view", items);
+      pushFolder(rows, input, connection, database, key, "Stored Procedures", "procedures", "procedure", items);
+      pushFolder(rows, input, connection, database, key, "Functions", "functions", "function", items);
+    }
+  }
+  return rows;
 }
 
-function DatabaseNode(
-  props: {
-    database: string;
-  } & Omit<Parameters<typeof ServerNode>[0], "needle">,
-) {
-  const id = `db:${props.connection.id}:${props.database}`;
-  const open = props.expanded.has(id);
-  const key = `${props.connection.id}:${props.database}`;
-  const items = props.objects[key] ?? [];
-  const tables = items.filter((item) => item.kind === "table");
-  const views = items.filter((item) => item.kind === "view");
-  const procedures = items.filter((item) => item.kind === "procedure");
-  const functions = items.filter((item) => item.kind === "function");
-  return (
-    <div>
-      <Row
-        depth={1}
-        id={id}
-        selected={props.selected}
-        open={open}
-        canExpand
-        icon={<DatabaseIcon />}
-        label={props.database}
-        onClick={() => {
-          props.onToggle(id);
-          props.onSelect(id, props.database);
-          if (!open) props.onExpandDatabase(props.database);
-        }}
-        onDoubleClick={() => props.onNewQuery(props.database)}
-        onContextMenu={(event) =>
-          props.onMenu(event, [
-            { label: "New Query", action: () => props.onNewQuery(props.database) },
-            {
-              label: "Generate Scripts",
-              action: () => props.onGenerateScript(props.database, null, "schema"),
-            },
-            {
-              label: "Backup Database",
-              action: () => props.onGenerateScript(props.database, null, "backup"),
-            },
-            { label: "Rename", action: () => props.onRenameDatabase(props.database) },
-            { label: "Refresh", action: props.onRefresh },
-          ])
-        }
-      />
-      {open ? (
-        <>
-          {props.errors[key] ? <div className="tree-error">{props.errors[key]}</div> : null}
-          {props.loading.has(key) ? <div className="tree-muted">Loading...</div> : null}
-          <Folder
-            depth={2}
-            id={`tables:${key}`}
-            title="Tables"
-            selected={props.selected}
-            expanded={props.expanded}
-            objects={tables}
-            onToggle={props.onToggle}
-            render={(object) => (
-              <ObjectNode key={`${object.schema}.${object.name}`} object={object} folder="table" {...props} />
-            )}
-          />
-          <Folder
-            depth={2}
-            id={`views:${key}`}
-            title="Views"
-            selected={props.selected}
-            expanded={props.expanded}
-            objects={views}
-            onToggle={props.onToggle}
-            render={(object) => (
-              <ObjectNode key={`${object.schema}.${object.name}`} object={object} folder="view" {...props} />
-            )}
-          />
-          <Folder
-            depth={2}
-            id={`procedures:${key}`}
-            title="Stored Procedures"
-            selected={props.selected}
-            expanded={props.expanded}
-            objects={procedures}
-            onToggle={props.onToggle}
-            render={(object) => (
-              <ObjectNode key={`${object.schema}.${object.name}`} object={object} folder="procedure" {...props} />
-            )}
-          />
-          <Folder
-            depth={2}
-            id={`functions:${key}`}
-            title="Functions"
-            selected={props.selected}
-            expanded={props.expanded}
-            objects={functions}
-            onToggle={props.onToggle}
-            render={(object) => (
-              <ObjectNode key={`${object.schema}.${object.name}`} object={object} folder="function" {...props} />
-            )}
-          />
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function Folder(props: {
-  depth: number;
-  id: string;
-  title: string;
-  selected: string;
-  expanded: Set<string>;
-  objects: DbObject[];
-  onToggle: (id: string) => void;
-  render: (object: DbObject) => ReactNode;
-}) {
-  const open = props.expanded.has(props.id);
-  return (
-    <div>
-      <Row
-        depth={props.depth}
-        id={props.id}
-        selected={props.selected}
-        open={open}
-        canExpand
-        icon={<FolderIcon />}
-        label={props.title}
-        onClick={() => props.onToggle(props.id)}
-      />
-      {open ? props.objects.map(props.render) : null}
-    </div>
-  );
-}
-
-function ObjectNode(
-  props: {
-    object: DbObject;
-    folder: "table" | "view" | "procedure" | "function";
-    database: string;
-    connection: Connection;
+function pushFolder(
+  rows: TreeItem[],
+  input: {
     expanded: Set<string>;
-    selected: string;
     columns: Record<string, ColumnInfo[]>;
     loading: Set<string>;
     errors: Record<string, string>;
-    onToggle: (id: string) => void;
-    onExpandObject: (database: string, object: DbObject) => void;
-    onSelectTop: (database: string, object: DbObject) => void;
-    onNewQuery: (database: string) => void;
-    onRenameTable: (database: string, object: DbObject) => void;
-    onScriptRoutine: (database: string, object: DbObject) => void;
-    onGenerateScript: (
-      database: string,
-      object: DbObject | null,
-      mode: "create" | "insert" | "both" | "schema" | "backup",
-    ) => void;
-    onMenu: (event: MouseEvent, items: MenuState["items"]) => void;
   },
+  connection: Connection,
+  database: string,
+  key: string,
+  title: string,
+  folderId: string,
+  folder: ObjectFolder,
+  items: DbObject[],
 ) {
-  const id = `obj:${props.connection.id}:${props.database}:${props.object.schema}.${props.object.name}`;
-  const columnKey = `${props.connection.id}:${props.database}:${props.object.schema}.${props.object.name}`;
-  const open = props.expanded.has(id);
-  const cols = props.columns[columnKey] ?? [];
-  const routine = props.folder === "procedure" || props.folder === "function";
-  const qualified =
-    props.connection.engine === "mysql" ? props.object.name : `${props.object.schema}.${props.object.name}`;
-  return (
-    <div>
-      <Row
-        depth={3}
-        id={id}
-        selected={props.selected}
-        open={open}
-        canExpand={!routine}
-        icon={iconFor(props.folder)}
-        label={qualified}
-        onClick={() => {
-          props.onToggle(id);
-          if (routine) {
-            if (!open) props.onToggle(id);
-            return;
-          }
-          if (!open) props.onExpandObject(props.database, props.object);
-        }}
-        onDoubleClick={() =>
-          routine ? props.onScriptRoutine(props.database, props.object) : props.onSelectTop(props.database, props.object)
-        }
-        onContextMenu={(event) =>
-          props.onMenu(
-            event,
-            routine
-              ? [
-                  { label: "Script as CREATE", action: () => props.onScriptRoutine(props.database, props.object) },
-                  { label: "New Query", action: () => props.onNewQuery(props.database) },
-                ]
-              : props.folder === "view"
-                ? [
-                    {
-                      label: props.connection.engine === "mssql" ? "Select Top 1000 Rows" : "Select First 1000 Rows",
-                      action: () => props.onSelectTop(props.database, props.object),
-                    },
-                    {
-                      label: "Script as CREATE",
-                      action: () => props.onGenerateScript(props.database, props.object, "create"),
-                    },
-                    { label: "Rename", action: () => props.onRenameTable(props.database, props.object) },
-                    { label: "New Query", action: () => props.onNewQuery(props.database) },
-                  ]
-                : [
-                    {
-                      label: props.connection.engine === "mssql" ? "Select Top 1000 Rows" : "Select First 1000 Rows",
-                      action: () => props.onSelectTop(props.database, props.object),
-                    },
-                    {
-                      label: "Script as CREATE",
-                      action: () => props.onGenerateScript(props.database, props.object, "create"),
-                    },
-                    {
-                      label: "Script as INSERT",
-                      action: () => props.onGenerateScript(props.database, props.object, "insert"),
-                    },
-                    {
-                      label: "Script as CREATE and INSERT",
-                      action: () => props.onGenerateScript(props.database, props.object, "both"),
-                    },
-                    { label: "Rename", action: () => props.onRenameTable(props.database, props.object) },
-                    { label: "New Query", action: () => props.onNewQuery(props.database) },
-                  ],
-          )
-        }
-      />
-      {open && props.loading.has(columnKey) ? <div className="tree-muted">Loading...</div> : null}
-      {open && props.errors[columnKey] ? <div className="tree-error">{props.errors[columnKey]}</div> : null}
-      {open
-        ? cols.map((column) => (
-            <Row
-              key={column.name}
-              depth={4}
-              id={`${id}:${column.name}`}
-              selected={props.selected}
-              open={false}
-              canExpand={false}
-              icon={<ColumnIcon />}
-              label={`${column.primaryKey ? "PK " : ""}${column.name} (${column.dataType}, ${column.nullable ? "null" : "not null"})`}
-              onClick={() => props.onToggle(`${id}:${column.name}`)}
-            />
-          ))
-        : null}
-    </div>
-  );
+  const id = `${folderId}:${key}`;
+  const open = input.expanded.has(id);
+  rows.push({
+    id,
+    depth: 2,
+    label: title,
+    icon: "folder",
+    canExpand: true,
+    open,
+    kind: { type: "folder", connection, database, folder, title },
+  });
+  if (!open) return;
+  for (const object of items) {
+    if (object.kind !== folder) continue;
+    const objectId = `obj:${connection.id}:${database}:${object.schema}.${object.name}`;
+    const columnKey = `${connection.id}:${database}:${object.schema}.${object.name}`;
+    const routine = folder === "procedure" || folder === "function";
+    const objectOpen = !routine && input.expanded.has(objectId);
+    const qualified = connection.engine === "mysql" ? object.name : `${object.schema}.${object.name}`;
+    rows.push({
+      id: objectId,
+      depth: 3,
+      label: qualified,
+      icon: folder,
+      canExpand: !routine,
+      open: objectOpen,
+      kind: { type: "object", connection, database, object, folder },
+    });
+    if (!objectOpen) continue;
+    if (input.loading.has(columnKey)) rows.push(statusRow(`loading:${columnKey}`, 4, "Loading...", "status"));
+    if (input.errors[columnKey]) rows.push(statusRow(`error:${columnKey}`, 4, input.errors[columnKey], "error"));
+    for (const column of input.columns[columnKey] ?? []) {
+      rows.push({
+        id: `${objectId}:${column.name}`,
+        depth: 4,
+        label: `${column.primaryKey ? "PK " : ""}${column.name} (${column.dataType}, ${column.nullable ? "null" : "not null"})`,
+        icon: "column",
+        canExpand: false,
+        open: false,
+        kind: { type: "column" },
+      });
+    }
+  }
 }
 
-function Row(props: {
-  depth: number;
-  id: string;
-  selected: string;
-  open: boolean;
-  canExpand: boolean;
-  icon: ReactNode;
-  label: string;
+function statusRow(id: string, depth: number, label: string, tone: "status" | "error"): TreeItem {
+  return { id, depth, label, icon: "none", canExpand: false, open: false, tone, kind: { type: "status" } };
+}
+
+function TreeRow(props: {
+  item: TreeItem;
+  selected: boolean;
   onClick: () => void;
   onDoubleClick?: () => void;
   onContextMenu?: (event: MouseEvent) => void;
 }) {
+  const lastClick = useRef(0);
+  const item = props.item;
   return (
     <div
-      className={`tree-row ${props.selected === props.id ? "selected" : ""}`}
-      style={{ paddingLeft: 6 + props.depth * 16 }}
-      onClick={props.onClick}
+      className={`tree-row${item.open ? " open" : ""}${props.selected ? " selected" : ""}${item.tone ? ` ${item.tone}` : ""}`}
+      style={{ paddingLeft: 6 + item.depth * 16 }}
+      title={item.label}
+      onClick={() => {
+        const now = performance.now();
+        if (props.onDoubleClick && now - lastClick.current < 280) {
+          lastClick.current = 0;
+          return;
+        }
+        lastClick.current = now;
+        props.onClick();
+      }}
       onDoubleClick={props.onDoubleClick}
       onContextMenu={props.onContextMenu}
     >
-      <span className="twist">{props.canExpand ? (props.open ? "▾" : "▸") : ""}</span>
-      {props.icon}
-      <span className="tree-label">{props.label}</span>
+      <span className="twist">{item.canExpand ? <i /> : null}</span>
+      {ICONS[item.icon]}
+      <span className="tree-label">{item.label}</span>
     </div>
   );
 }
 
-function iconFor(folder: "table" | "view" | "procedure" | "function") {
-  if (folder === "view") return <ViewIcon />;
-  if (folder === "procedure") return <ProcedureIcon />;
-  if (folder === "function") return <FunctionIcon />;
-  return <TableIcon />;
-}
-
-function label(engine: EngineKind): string {
+function engineLabel(engine: EngineKind): string {
   if (engine === "mssql") return "SQL Server";
   if (engine === "postgres") return "PostgreSQL";
   return "MySQL";

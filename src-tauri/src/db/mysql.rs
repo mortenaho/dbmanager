@@ -4,8 +4,8 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{OptsBuilder, SslOpts, Value};
 
 use crate::model::{
-    quote_mysql, ColumnInfo, ColumnRef, Credentials, DbObject, QueryMessage, QueryResponse, ResultSet,
-    HARD_ROW_LIMIT, STORE_ROW_LIMIT,
+    parse_row_count, quote_mysql, ColumnInfo, ColumnRef, Credentials, DbObject, QueryMessage, QueryResponse,
+    ResultSet, HARD_ROW_LIMIT, STORE_ROW_LIMIT,
 };
 
 use super::Outcome;
@@ -67,7 +67,9 @@ pub async fn list_objects(
     let rows: Vec<mysql_async::Row> = conn
         .exec(
             "SELECT table_name,
-                    CASE WHEN table_type = 'VIEW' THEN 'view' ELSE 'table' END
+                    CASE WHEN table_type = 'VIEW' THEN 'view' ELSE 'table' END,
+                    IFNULL(DATE_FORMAT(create_time, '%Y-%m-%d %H:%i:%s'), ''),
+                    table_rows
              FROM information_schema.tables
              WHERE table_schema = ?
              ORDER BY table_type, table_name",
@@ -82,6 +84,8 @@ pub async fn list_objects(
             schema: database.to_string(),
             name: cell(row, 0).unwrap_or_default(),
             kind: cell(row, 1).unwrap_or_else(|| "table".into()),
+            created: cell(row, 2).unwrap_or_default(),
+            row_count: parse_row_count(cell(row, 3)),
         })
         .filter(|object| !object.name.is_empty())
         .collect();
@@ -102,11 +106,11 @@ pub async fn list_objects(
             if name.is_empty() {
                 continue;
             }
-            objects.push(DbObject {
-                schema: database.to_string(),
+            objects.push(DbObject::plain(
+                database.to_string(),
                 name,
-                kind: cell(&row, 1).unwrap_or_else(|| "function".into()),
-            });
+                cell(&row, 1).unwrap_or_else(|| "function".into()),
+            ));
         }
     }
 

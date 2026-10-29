@@ -6,8 +6,8 @@ use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::model::{
-    quote_mssql, ColumnInfo, ColumnRef, Credentials, DbObject, QueryMessage, QueryResponse, ResultSet,
-    HARD_ROW_LIMIT, STORE_ROW_LIMIT,
+    parse_row_count, quote_mssql, ColumnInfo, ColumnRef, Credentials, DbObject, QueryMessage, QueryResponse,
+    ResultSet, HARD_ROW_LIMIT, STORE_ROW_LIMIT,
 };
 
 use super::Outcome;
@@ -74,22 +74,23 @@ pub async fn list_objects(
 ) -> Result<Vec<DbObject>, String> {
     let db = quote_mssql(database);
     let sql = format!(
-        "SELECT s.name, t.name, 'table'
+        "SELECT s.name, t.name, 'table', CONVERT(varchar(19), t.create_date, 120),
+                CAST((SELECT SUM(p.rows) FROM {db}.sys.partitions p WHERE p.object_id = t.object_id AND p.index_id IN (0, 1)) AS bigint)
          FROM {db}.sys.tables t
          INNER JOIN {db}.sys.schemas s ON s.schema_id = t.schema_id
          WHERE t.is_ms_shipped = 0
          UNION ALL
-         SELECT s.name, v.name, 'view'
+         SELECT s.name, v.name, 'view', CONVERT(varchar(19), v.create_date, 120), CAST(NULL AS bigint)
          FROM {db}.sys.views v
          INNER JOIN {db}.sys.schemas s ON s.schema_id = v.schema_id
          WHERE v.is_ms_shipped = 0
          UNION ALL
-         SELECT s.name, p.name, 'procedure'
+         SELECT s.name, p.name, 'procedure', CONVERT(varchar(19), p.create_date, 120), CAST(NULL AS bigint)
          FROM {db}.sys.procedures p
          INNER JOIN {db}.sys.schemas s ON s.schema_id = p.schema_id
          WHERE p.is_ms_shipped = 0
          UNION ALL
-         SELECT s.name, o.name, 'function'
+         SELECT s.name, o.name, 'function', CONVERT(varchar(19), o.create_date, 120), CAST(NULL AS bigint)
          FROM {db}.sys.objects o
          INNER JOIN {db}.sys.schemas s ON s.schema_id = o.schema_id
          WHERE o.is_ms_shipped = 0 AND o.type IN ('FN', 'IF', 'TF', 'FS', 'FT')
@@ -102,6 +103,8 @@ pub async fn list_objects(
             schema: cell(row, 0).unwrap_or_default(),
             name: cell(row, 1).unwrap_or_default(),
             kind: cell(row, 2).unwrap_or_else(|| "table".into()),
+            created: cell(row, 3).unwrap_or_default(),
+            row_count: parse_row_count(cell(row, 4)),
         })
         .filter(|object| !object.name.is_empty())
         .collect())

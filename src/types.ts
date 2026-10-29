@@ -43,6 +43,8 @@ export type DbObject = {
   schema: string;
   name: string;
   kind: "table" | "view" | "procedure" | "function" | string;
+  created?: string;
+  rowCount?: number | null;
 };
 
 export type ColumnRef = {

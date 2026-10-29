@@ -319,11 +319,7 @@ pub async fn generate_script(
             schema.trim().to_string()
         };
         let name = require_ident(name, "Object")?;
-        let object = DbObject {
-            schema,
-            name,
-            kind: kind.to_string(),
-        };
+        let object = crate::model::DbObject::plain(schema, name, kind);
         let (chunk, notes) =
             script_object(conn, creds, database, &object, include_create, include_data).await?;
         sql.push_str(&chunk);

@@ -82,7 +82,8 @@ pub async fn list_objects(client: &Client) -> Result<Vec<DbObject>, String> {
     let rows = client
         .query(
             "SELECT n.nspname, c.relname,
-                    CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'view' ELSE 'table' END
+                    CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'view' ELSE 'table' END,
+                    CASE WHEN c.relkind IN ('r', 'p', 'm') THEN GREATEST(c.reltuples, 0)::bigint ELSE NULL END
              FROM pg_class c
              JOIN pg_namespace n ON n.oid = c.relnamespace
              WHERE c.relkind IN ('r', 'p', 'v', 'm')
@@ -100,6 +101,8 @@ pub async fn list_objects(client: &Client) -> Result<Vec<DbObject>, String> {
                 schema: row.try_get(0).map_err(|e| e.to_string())?,
                 name: row.try_get(1).map_err(|e| e.to_string())?,
                 kind: row.try_get(2).map_err(|e| e.to_string())?,
+                created: String::new(),
+                row_count: row.try_get(3).unwrap_or(None),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -118,11 +121,11 @@ pub async fn list_objects(client: &Client) -> Result<Vec<DbObject>, String> {
         .await
     {
         for row in routines {
-            objects.push(DbObject {
-                schema: row.try_get(0).unwrap_or_default(),
-                name: row.try_get(1).unwrap_or_default(),
-                kind: row.try_get(2).unwrap_or_else(|_| "function".into()),
-            });
+            objects.push(DbObject::plain(
+                row.try_get::<_, String>(0).unwrap_or_default(),
+                row.try_get::<_, String>(1).unwrap_or_default(),
+                row.try_get::<_, String>(2).unwrap_or_else(|_| "function".into()),
+            ));
         }
         objects.retain(|object| !object.name.is_empty());
     }

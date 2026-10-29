@@ -1,6 +1,3 @@
-//! Blocks UPDATE and DELETE statements that have no WHERE clause.
-//! WHERE inside a string, comment, or nested expression does not count.
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Update,
