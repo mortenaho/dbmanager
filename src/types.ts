@@ -154,6 +154,12 @@ export function objectTabTitle(engine: EngineKind, schema: string, name: string)
   return `${schemaName}.${objectName}`;
 }
 
+export function defaultSchema(engine: EngineKind, database: string): string {
+  if (engine === "mssql") return "dbo";
+  if (engine === "postgres") return "public";
+  return database;
+}
+
 export function selectTopSql(engine: EngineKind, schema: string, table: string): string {
   if (engine === "mssql") {
     return `SELECT TOP (1000) *\nFROM ${quoteIdent(engine, schema)}.${quoteIdent(engine, table)};`;

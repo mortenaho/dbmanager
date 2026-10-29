@@ -925,3 +925,88 @@ kbd {
   padding: 4px 8px;
   font-size: 12px;
 }
+
+.table-design {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+.table-design-bar {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(#fafafa, #eeeeee);
+  flex: none;
+}
+.table-design-bar button {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 2px;
+}
+.table-design-bar button:hover:not(:disabled) { background: var(--hover); border-color: #c2ddf5; }
+.table-design-bar .spacer { flex: 1; }
+.table-design-bar .diagram-go {
+  background: var(--blue);
+  color: #fff;
+  border-color: var(--blue-dark);
+}
+.td-grid { overflow: auto; flex: none; background: #fff; }
+.td-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.td-table th {
+  height: 22px;
+  text-align: left;
+  font-weight: 600;
+  padding: 0 6px;
+  border-bottom: 1px dotted #8d8d8d;
+  background: #fff;
+  position: sticky;
+  top: 0;
+}
+.td-table td { height: 22px; border-bottom: 1px solid #f3f3f3; padding: 0; }
+.td-table tr.selected { background: var(--selection); }
+.td-gutter { width: 28px; text-align: center; }
+.td-null { width: 96px; text-align: center; }
+.td-table td input, .td-table td select, .td-value input, .td-value select {
+  width: 100%;
+  height: 20px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  padding: 0 6px;
+}
+.td-table td.td-null input { width: auto; }
+.td-table td input:focus, .td-table td select:focus, .td-value input:focus, .td-value select:focus {
+  outline: 1px solid var(--blue);
+  background: #fff;
+}
+.td-key { display: block; margin: 0 auto; }
+.td-props { flex: 1; min-height: 80px; overflow: auto; background: #fff; }
+.td-caption, .td-group {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  background: #f3f3f3;
+  font-weight: 600;
+  border-bottom: 1px solid #e5e5e5;
+}
+.td-prop { display: grid; grid-template-columns: 220px 1fr; min-height: 22px; }
+.td-prop > span, .td-value {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #eee;
+  min-width: 0;
+}
+.td-prop > span { padding: 0 8px; color: #333; }
+.td-props .dialog-error { margin: 8px; }

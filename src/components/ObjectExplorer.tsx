@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode }
 import { listColumns, listObjects } from "../api";
 import {
   errorText,
+  defaultSchema,
   objectTabTitle,
   selectTopSql,
   type ColumnInfo,
@@ -36,6 +37,7 @@ type Props = {
   onSelectContext: (connectionId: string, database: string) => void;
   onRenameDatabase: (connectionId: string, database: string) => void;
   onRenameTable: (connectionId: string, database: string, schema: string, name: string) => void;
+  onDesignTable: (connectionId: string, database: string, schema: string, name: string) => void;
   onScriptRoutine: (connectionId: string, database: string, object: DbObject) => void;
   onGenerateScript: (
     connectionId: string,
@@ -72,6 +74,7 @@ export function ObjectExplorer({
   onSelectContext,
   onRenameDatabase,
   onRenameTable,
+  onDesignTable,
   onScriptRoutine,
   onGenerateScript,
   onShowDetails,
@@ -99,7 +102,11 @@ export function ObjectExplorer({
   objectsRef.current = objects;
 
   useEffect(() => {
-    const close = () => setMenu(null);
+    const close = (event: globalThis.MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".context-menu")) return;
+      setMenu(null);
+    };
     window.addEventListener("mousedown", close);
     return () => window.removeEventListener("mousedown", close);
   }, []);
@@ -288,6 +295,7 @@ export function ObjectExplorer({
       const { connection, database } = item.kind;
       openMenu(event, [
         { label: "New Query", action: () => onNewQuery(connection.id, database) },
+        { label: "New Table", action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), "") },
         { label: "Generate Scripts", action: () => onGenerateScript(connection.id, database, null, "schema") },
         { label: "Backup Database", action: () => onGenerateScript(connection.id, database, null, "backup") },
         { label: "Rename", action: () => onRenameDatabase(connection.id, database) },
@@ -321,6 +329,7 @@ export function ObjectExplorer({
                 { label: "New Query", action: () => onNewQuery(connection.id, database) },
               ]
             : [
+                { label: "Design", action: () => onDesignTable(connection.id, database, object.schema, object.name) },
                 {
                   label: topLabel,
                   action: () =>
@@ -341,6 +350,15 @@ export function ObjectExplorer({
                 { label: "New Query", action: () => onNewQuery(connection.id, database) },
               ],
       );
+    } else if (item.kind.type === "folder" && item.kind.folder === "table") {
+      const { connection, database } = item.kind;
+      openMenu(event, [
+        {
+          label: "New Table",
+          action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), ""),
+        },
+        { label: "Refresh", action: () => refreshConnection(connection.id) },
+      ]);
     }
   }
 
@@ -411,7 +429,10 @@ export function ObjectExplorer({
                     item.kind.type === "database" || item.kind.type === "object" ? () => onRowDoubleClick(item) : undefined
                   }
                   onContextMenu={
-                    item.kind.type === "server" || item.kind.type === "database" || item.kind.type === "object"
+                    item.kind.type === "server" ||
+                    item.kind.type === "database" ||
+                    item.kind.type === "object" ||
+                    (item.kind.type === "folder" && item.kind.folder === "table")
                       ? (event) => onRowMenu(event, item)
                       : undefined
                   }
@@ -425,8 +446,11 @@ export function ObjectExplorer({
         <div className="context-menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(event) => event.stopPropagation()}>
           {menu.items.map((item) => (
             <button
+              type="button"
               key={item.label}
-              onClick={() => {
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
                 setMenu(null);
                 item.action();
               }}
