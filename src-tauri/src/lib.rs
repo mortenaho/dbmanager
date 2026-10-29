@@ -29,6 +29,7 @@ pub fn run() {
             commands::script_routine,
             commands::generate_script,
             commands::write_text_file,
+            commands::read_text_file,
             commands::write_binary_file,
             commands::execute_sql,
             commands::parse_sql,

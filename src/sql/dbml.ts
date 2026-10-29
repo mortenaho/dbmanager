@@ -16,6 +16,8 @@ export type DbmlTable = {
   columns: DbmlColumn[];
 };
 
+export type RefEnd = "one" | "many";
+
 export type DbmlRef = {
   fromSchema: string;
   fromTable: string;
@@ -23,6 +25,8 @@ export type DbmlRef = {
   toSchema: string;
   toTable: string;
   toColumn: string;
+  fromEnd: RefEnd;
+  toEnd: RefEnd;
 };
 
 export type DbmlModel = {
@@ -141,13 +145,8 @@ export function diagramToSql(model: DbmlModel, engine: EngineKind): string {
     statements.push(`CREATE TABLE ${qualify(engine, table.schema, table.name)} (\n${lines.join(",\n")}\n);`);
   }
   const used = new Set<string>();
-  for (const ref of model.refs) {
-    const from = model.tables.find((table) => sameTable(table, ref.fromSchema, ref.fromTable));
-    const to = model.tables.find((table) => sameTable(table, ref.toSchema, ref.toTable));
-    if (!from || !to) continue;
-    if (!from.columns.some((column) => column.name.toLowerCase() === ref.fromColumn.toLowerCase())) continue;
-    if (!to.columns.some((column) => column.name.toLowerCase() === ref.toColumn.toLowerCase())) continue;
-    let name = `fk_${from.name}_${ref.fromColumn}`.replace(/[^A-Za-z0-9_]/g, "_");
+  const claim = (base: string) => {
+    let name = base.replace(/[^A-Za-z0-9_]/g, "_");
     if (name.length > 60) name = name.slice(0, 60);
     let unique = name;
     let n = 2;
@@ -156,15 +155,209 @@ export function diagramToSql(model: DbmlModel, engine: EngineKind): string {
       n += 1;
     }
     used.add(unique.toLowerCase());
+    return unique;
+  };
+  for (const ref of model.refs) {
+    const from = model.tables.find((table) => sameTable(table, ref.fromSchema, ref.fromTable));
+    const to = model.tables.find((table) => sameTable(table, ref.toSchema, ref.toTable));
+    if (!from || !to) continue;
+    if (!from.columns.some((column) => column.name.toLowerCase() === ref.fromColumn.toLowerCase())) continue;
+    if (!to.columns.some((column) => column.name.toLowerCase() === ref.toColumn.toLowerCase())) continue;
+    if (ref.fromEnd === "many" && ref.toEnd === "many") {
+      statements.push(`-- ${from.name}.${ref.fromColumn} <> ${to.name}.${ref.toColumn} is many-to-many and needs a junction table.`);
+      continue;
+    }
+    const fkName = claim(`fk_${from.name}_${ref.fromColumn}`);
     statements.push(
-      `ALTER TABLE ${qualify(engine, from.schema, from.name)} ADD CONSTRAINT ${quoteIdent(engine, unique)} FOREIGN KEY (${quoteIdent(engine, ref.fromColumn)}) REFERENCES ${qualify(engine, to.schema, to.name)} (${quoteIdent(engine, ref.toColumn)});`,
+      `ALTER TABLE ${qualify(engine, from.schema, from.name)} ADD CONSTRAINT ${quoteIdent(engine, fkName)} FOREIGN KEY (${quoteIdent(engine, ref.fromColumn)}) REFERENCES ${qualify(engine, to.schema, to.name)} (${quoteIdent(engine, ref.toColumn)});`,
     );
+    if (ref.fromEnd === "one" && ref.toEnd === "one") {
+      const column = from.columns.find((item) => item.name.toLowerCase() === ref.fromColumn.toLowerCase());
+      if (column && !column.pk && !column.unique) {
+        const uniqueName = claim(`uq_${from.name}_${ref.fromColumn}`);
+        statements.push(
+          `ALTER TABLE ${qualify(engine, from.schema, from.name)} ADD CONSTRAINT ${quoteIdent(engine, uniqueName)} UNIQUE (${quoteIdent(engine, ref.fromColumn)});`,
+        );
+      }
+    }
   }
   return statements.join("\n\n");
 }
 
 export function tableKey(schema: string, name: string): string {
   return `${schema}.${name}`.toLowerCase();
+}
+
+export type DesignPoint = { x: number; y: number };
+
+export type DesignFile = {
+  engine: EngineKind | "";
+  dbml: string;
+  positions: Record<string, DesignPoint>;
+};
+
+export const DBML_SNIPPETS: Array<{ id: string; label: string; title: string; text: string }> = [
+  {
+    id: "table",
+    label: "Table",
+    title: "Table with a primary key",
+    text: "Table orders {\n  id integer [pk, increment]\n  created_at timestamp\n}\n",
+  },
+  {
+    id: "pk",
+    label: "Primary key",
+    title: "Identity primary key column",
+    text: "id integer [pk, increment]\n",
+  },
+  {
+    id: "fk",
+    label: "Foreign key",
+    title: "Column that references another table",
+    text: "user_id integer [not null, ref: > users.id]\n",
+  },
+  {
+    id: "unique",
+    label: "Unique",
+    title: "Required unique column",
+    text: "email varchar(255) [unique, not null]\n",
+  },
+  {
+    id: "timestamps",
+    label: "Timestamps",
+    title: "Created and updated timestamps",
+    text: "created_at timestamp\nupdated_at timestamp\n",
+  },
+  {
+    id: "ref",
+    label: "One to many",
+    title: "One-to-many relationship. The column on the left is the many side",
+    text: "Ref: orders.user_id > users.id\n",
+  },
+  {
+    id: "ref-one",
+    label: "One to one",
+    title: "One-to-one relationship",
+    text: "Ref: profiles.user_id - users.id\n",
+  },
+  {
+    id: "ref-many",
+    label: "Many to many",
+    title: "Many-to-many relationship",
+    text: "Ref: posts.id <> tags.id\n",
+  },
+];
+
+export function encodeDesign(file: DesignFile): string {
+  return JSON.stringify(
+    {
+      kind: "dbmanager-design",
+      version: 1,
+      engine: file.engine,
+      dbml: file.dbml,
+      positions: file.positions,
+    },
+    null,
+    2,
+  );
+}
+
+export function decodeDesign(contents: string): DesignFile {
+  const text = contents.trim();
+  if (!text.startsWith("{")) return { engine: "", dbml: contents, positions: {} };
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("This design file is not valid.");
+  }
+  if (!value || typeof value !== "object") throw new Error("This design file is not valid.");
+  const record = value as Record<string, unknown>;
+  if (typeof record.dbml !== "string") throw new Error("This design file has no diagram.");
+  const engine = record.engine === "mssql" || record.engine === "mysql" || record.engine === "postgres" ? record.engine : "postgres";
+  const positions: Record<string, DesignPoint> = {};
+  if (record.positions && typeof record.positions === "object") {
+    for (const [key, pos] of Object.entries(record.positions as Record<string, unknown>)) {
+      if (!pos || typeof pos !== "object") continue;
+      const point = pos as Record<string, unknown>;
+      if (typeof point.x !== "number" || typeof point.y !== "number") continue;
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+      positions[key] = { x: point.x, y: point.y };
+    }
+  }
+  return { engine, dbml: record.dbml, positions };
+}
+
+export function addTableBlock(source: string): string {
+  const model = parseDbml(source);
+  const used = new Set(model.tables.map((table) => table.name.toLowerCase()));
+  let index = model.tables.length + 1;
+  let name = `table_${index}`;
+  while (used.has(name)) {
+    index += 1;
+    name = `table_${index}`;
+  }
+  const block = `Table ${name} {\n  id integer [pk, increment]\n}\n`;
+  const base = source.replace(/\s*$/, "");
+  return base ? `${base}\n\n${block}` : block;
+}
+
+export function insertColumnSnippet(source: string, cursor: number, text: string): { dbml: string; cursor: number } | null {
+  const spans = tableSpans(source);
+  if (spans.length === 0) return null;
+  const at = Math.max(0, Math.min(cursor, source.length));
+  const hit = spans.find((span) => at >= span.open && at <= span.close) ?? spans[spans.length - 1];
+  const rows = text
+    .split("\n")
+    .map((row) => row.trim())
+    .filter(Boolean)
+    .map((row) => `  ${row}`)
+    .join("\n");
+  const before = source.slice(0, hit.close);
+  const pad = before.endsWith("\n") ? "" : "\n";
+  const chunk = `${pad}${rows}\n`;
+  return { dbml: `${before}${chunk}${source.slice(hit.close)}`, cursor: before.length + chunk.length };
+}
+
+export function addRelationshipLine(source: string, op: "-" | "<>"): string {
+  const model = parseDbml(source);
+  const left = model.tables[model.tables.length - 2];
+  const right = model.tables[model.tables.length - 1];
+  const line =
+    left && right
+      ? `Ref: ${qualifyName(right)}.${columnName(right)} ${op} ${qualifyName(left)}.${columnName(left)}\n`
+      : `Ref: right.id ${op} left.id\n`;
+  const base = source.replace(/\s*$/, "");
+  return base ? `${base}\n\n${line}` : line;
+}
+
+function qualifyName(table: DbmlTable): string {
+  return table.schema ? `${table.schema}.${table.name}` : table.name;
+}
+
+function columnName(table: DbmlTable): string {
+  return table.columns.find((column) => column.pk)?.name || table.columns[0]?.name || "id";
+}
+
+export function addRelationshipBlock(source: string): string {
+  const model = parseDbml(source);
+  if (model.tables.length < 2) {
+    const line = "Ref: child.parent_id > parent.id\n";
+    const base = source.replace(/\s*$/, "");
+    return base ? `${base}\n\n${line}` : line;
+  }
+  const to = model.tables[model.tables.length - 2];
+  const from = model.tables[model.tables.length - 1];
+  const pk = to.columns.find((column) => column.pk)?.name || to.columns[0]?.name || "id";
+  const column = `${to.name}_id`;
+  const target = to.schema ? `${to.schema}.${to.name}` : to.name;
+  const fromName = from.schema ? `${from.schema}.${from.name}` : from.name;
+  if (from.columns.some((item) => item.name.toLowerCase() === column.toLowerCase())) {
+    const line = `Ref: ${fromName}.${column} > ${target}.${pk}\n`;
+    const base = source.replace(/\s*$/, "");
+    return base ? `${base}\n\n${line}` : line;
+  }
+  const inserted = insertIntoTable(source, from.schema, from.name, `  ${column} integer [not null, ref: > ${target}.${pk}]`);
+  return inserted ?? source;
 }
 
 function columnSql(engine: EngineKind, column: DbmlColumn, inlinePk: boolean): string {
@@ -228,6 +421,8 @@ function parseColumns(inner: string, schema: string, table: string, refs: DbmlRe
         toSchema: schema,
         toTable: table,
         toColumn: parsed.column.name,
+        fromEnd: ref.fromEnd,
+        toEnd: ref.toEnd,
       });
     }
   }
@@ -236,8 +431,8 @@ function parseColumns(inner: string, schema: string, table: string, refs: DbmlRe
 
 function parseColumn(line: string): {
   column: DbmlColumn;
-  outgoing: Array<Pick<DbmlRef, "toSchema" | "toTable" | "toColumn">>;
-  incoming: Array<{ schema: string; table: string; column: string }>;
+  outgoing: Array<Pick<DbmlRef, "toSchema" | "toTable" | "toColumn" | "fromEnd" | "toEnd">>;
+  incoming: Array<{ schema: string; table: string; column: string; fromEnd: RefEnd; toEnd: RefEnd }>;
 } | null {
   const named = readPart(line, skipWs(line, 0));
   if (!named) return null;
@@ -254,8 +449,8 @@ function parseColumn(line: string): {
     notNull: false,
     defaultValue: "",
   };
-  const outgoing: Array<Pick<DbmlRef, "toSchema" | "toTable" | "toColumn">> = [];
-  const incoming: Array<{ schema: string; table: string; column: string }> = [];
+  const outgoing: Array<Pick<DbmlRef, "toSchema" | "toTable" | "toColumn" | "fromEnd" | "toEnd">> = [];
+  const incoming: Array<{ schema: string; table: string; column: string; fromEnd: RefEnd; toEnd: RefEnd }> = [];
   const settings = settingsAt < 0 ? "" : line.slice(settingsAt + 1, closingBracket(line, settingsAt));
   for (const token of splitSettings(settings)) {
     const low = token.toLowerCase();
@@ -267,26 +462,33 @@ function parseColumn(line: string): {
     else if (low.startsWith("default:")) column.defaultValue = token.slice(token.indexOf(":") + 1).trim();
     else if (low.startsWith("ref:")) {
       const body = token.slice(token.indexOf(":") + 1).trim();
-      const rel = body.match(/^([<>\-])\s*(.+)$/);
+      const rel = body.match(/^(<>|[<>\-])\s*(.+)$/);
       if (!rel) continue;
       const target = pathOf(rel[2]);
       if (!target) continue;
-      if (rel[1] === "<") incoming.push(target);
-      else outgoing.push({ toSchema: target.schema, toTable: target.table, toColumn: target.column });
+      const ends = refEnds(rel[1]);
+      if (rel[1] === "<") incoming.push({ ...target, ...ends });
+      else outgoing.push({ toSchema: target.schema, toTable: target.table, toColumn: target.column, ...ends });
     }
   }
   return { column, outgoing, incoming };
 }
 
+function refEnds(op: string): { fromEnd: RefEnd; toEnd: RefEnd } {
+  if (op === "-") return { fromEnd: "one", toEnd: "one" };
+  if (op === "<>") return { fromEnd: "many", toEnd: "many" };
+  return { fromEnd: "many", toEnd: "one" };
+}
+
 function parseRefLine(statement: string): DbmlRef | null {
-  const match = statement.trim().match(/^refs?(?:\s+[A-Za-z_][\w]*)?\s*:\s*(.+?)\s+([<>\-])\s+(.+)$/i);
+  const match = statement.trim().match(/^refs?(?:\s+[A-Za-z_][\w]*)?\s*:\s*(.+?)\s+(<>|[<>\-])\s+(.+)$/i);
   if (!match) return null;
   const left = pathOf(match[1]);
   const right = pathOf(match[3]);
   if (!left || !right) return null;
-  const forward = match[2] !== "<";
-  const from = forward ? left : right;
-  const to = forward ? right : left;
+  const swap = match[2] === "<";
+  const from = swap ? right : left;
+  const to = swap ? left : right;
   return {
     fromSchema: from.schema,
     fromTable: from.table,
@@ -294,6 +496,7 @@ function parseRefLine(statement: string): DbmlRef | null {
     toSchema: to.schema,
     toTable: to.table,
     toColumn: to.column,
+    ...refEnds(match[2]),
   };
 }
 
@@ -457,6 +660,69 @@ function readPart(text: string, i: number): { value: string; end: number } | nul
 function skipWs(text: string, i: number): number {
   while (i < text.length && /\s/.test(text[i])) i += 1;
   return i;
+}
+
+function insertIntoTable(source: string, schema: string, name: string, line: string): string | null {
+  const close = tableCloseIndex(source, schema, name);
+  if (close === null) return null;
+  const before = source.slice(0, close);
+  const pad = before.endsWith("\n") ? "" : "\n";
+  return `${before}${pad}${line}\n${source.slice(close)}`;
+}
+
+function tableCloseIndex(source: string, schema: string, name: string): number | null {
+  const span = tableSpans(source).find(
+    (item) =>
+      item.name.toLowerCase() === name.toLowerCase() &&
+      (!schema || !item.schema || item.schema.toLowerCase() === schema.toLowerCase()),
+  );
+  return span ? span.close : null;
+}
+
+function tableSpans(source: string): Array<{ schema: string; name: string; open: number; close: number }> {
+  const text = stripComments(source);
+  const spans: Array<{ schema: string; name: string; open: number; close: number }> = [];
+  let i = 0;
+  while (i < text.length) {
+    i = skipWs(text, i);
+    if (i >= text.length) break;
+    const word = text.slice(i).match(/^[A-Za-z_][\w]*/);
+    if (!word) break;
+    const keyword = word[0].toLowerCase();
+    if (keyword === "table") {
+      i += word[0].length;
+      i = skipWs(text, i);
+      const named = readIdent(text, i);
+      if (!named) break;
+      i = named.end;
+      i = skipWs(text, i);
+      if (text.slice(i, i + 2).toLowerCase() === "as" && /\s/.test(text[i + 2] ?? "")) {
+        i += 2;
+        i = skipWs(text, i);
+        const alias = readPart(text, i);
+        if (alias) i = alias.end;
+        i = skipWs(text, i);
+      }
+      if (text[i] !== "{") break;
+      const open = i;
+      const block = extractBlock(text, i);
+      if (!block) break;
+      spans.push({ schema: named.schema, name: named.name, open, close: block.end });
+      i = block.end + 1;
+      continue;
+    }
+    if (keyword === "enum" || keyword === "project" || keyword === "tablegroup") {
+      const brace = text.indexOf("{", i);
+      if (brace < 0) break;
+      const block = extractBlock(text, brace);
+      if (!block) break;
+      i = block.end + 1;
+      continue;
+    }
+    const stop = text.indexOf("\n", i);
+    i = stop < 0 ? text.length : stop + 1;
+  }
+  return spans;
 }
 
 function lineNumber(text: string, index: number): number {

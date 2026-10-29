@@ -1,26 +1,29 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { diagramToSql, parseDbml, tableKey, type DbmlTable } from "../sql/dbml";
-import type { EngineKind } from "../types";
+import {
+  addRelationshipBlock,
+  addRelationshipLine,
+  addTableBlock,
+  DBML_SNIPPETS,
+  decodeDesign,
+  diagramToSql,
+  encodeDesign,
+  insertColumnSnippet,
+  parseDbml,
+  tableKey,
+  type DbmlRef,
+  type DbmlTable,
+  type DesignPoint,
+  type RefEnd,
+} from "../sql/dbml";
+import { errorText, type EngineKind } from "../types";
 
 const CARD_W = 240;
 const HEAD = 28;
 const ROW = 22;
-
-function packedPos(tables: DbmlTable[], index: number, width: number): { x: number; y: number } {
-  const columns = Math.max(1, Math.floor((Math.max(width, 280) - 16) / 280));
-  const tops = Array.from({ length: columns }, () => 24);
-  let pos = { x: 24, y: 24 };
-  for (let i = 0; i <= index && i < tables.length; i += 1) {
-    let column = 0;
-    for (let next = 1; next < columns; next += 1) {
-      if (tops[next] < tops[column]) column = next;
-    }
-    pos = { x: 24 + column * 280, y: tops[column] };
-    const height = HEAD + Math.max(tables[i].columns.length, 1) * ROW + 40;
-    tops[column] = pos.y + height;
-  }
-  return pos;
-}
+const GAP_X = 108;
+const GAP_Y = 40;
+const MARGIN = 32;
+const STUB = 22;
 
 export function DiagramDesigner(props: {
   dbml: string;
@@ -28,23 +31,18 @@ export function DiagramDesigner(props: {
   onDbml: (value: string) => void;
   onEngine: (engine: EngineKind) => void;
   onImplement: (sql: string) => void;
+  onSaveFile: (fileName: string, contents: string) => Promise<"saved" | "cancelled">;
+  onOpenFile: () => Promise<{ name: string; contents: string } | null>;
 }) {
   const model = useMemo(() => parseDbml(props.dbml), [props.dbml]);
   const sql = useMemo(() => diagramToSql(model, props.engine), [model, props.engine]);
-  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
-  const [stageWidth, setStageWidth] = useState(640);
+  const [positions, setPositions] = useState<Record<string, DesignPoint>>({});
+  const [fileName, setFileName] = useState("DatabaseDesign.dbdesign");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
+  const codeRef = useRef<HTMLTextAreaElement>(null);
   const drag = useRef<{ key: string; dx: number; dy: number } | null>(null);
-
-  useEffect(() => {
-    const stage = stageRef.current;
-    if (!stage) return;
-    const apply = () => setStageWidth(stage.clientWidth);
-    apply();
-    const observer = new ResizeObserver(apply);
-    observer.observe(stage);
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     const move = (event: MouseEvent) => {
@@ -67,37 +65,27 @@ export function DiagramDesigner(props: {
     };
   }, []);
 
-  const placed = model.tables.map((table, index) => {
+  const auto = useMemo(() => layoutTables(model.tables, model.refs), [model]);
+  const placed = model.tables.map((table) => {
     const key = tableKey(table.schema, table.name);
-    const fallback = positions[key] ? null : packedPos(model.tables, index, stageWidth);
-    return { table, key, pos: positions[key] ?? fallback ?? { x: 24, y: 24 } };
+    return { table, key, pos: positions[key] ?? auto[key] ?? { x: MARGIN, y: MARGIN } };
   });
-  const bounds = placed.reduce(
-    (size, item) => ({
-      w: Math.max(size.w, item.pos.x + CARD_W + 48),
-      h: Math.max(size.h, item.pos.y + HEAD + item.table.columns.length * ROW + 48),
+  const lines = relationshipLines(placed, model.refs);
+  const bounds = lines.reduce(
+    (size, line) => ({
+      w: Math.max(size.w, line.right + 36),
+      h: Math.max(size.h, line.bottom + 36),
     }),
-    { w: 640, h: 420 },
+    placed.reduce(
+      (size, item) => ({
+        w: Math.max(size.w, item.pos.x + CARD_W + 48),
+        h: Math.max(size.h, item.pos.y + HEAD + item.table.columns.length * ROW + 48),
+      }),
+      { w: 640, h: 420 },
+    ),
   );
-  const lines = model.refs.flatMap((ref) => {
-    const from = placed.find((item) => same(item.table, ref.fromSchema, ref.fromTable));
-    const to = placed.find((item) => same(item.table, ref.toSchema, ref.toTable));
-    if (!from || !to) return [];
-    const fromRow = from.table.columns.findIndex((column) => column.name.toLowerCase() === ref.fromColumn.toLowerCase());
-    const toRow = to.table.columns.findIndex((column) => column.name.toLowerCase() === ref.toColumn.toLowerCase());
-    if (fromRow < 0 || toRow < 0) return [];
-    const y1 = from.pos.y + HEAD + fromRow * ROW + ROW / 2;
-    const y2 = to.pos.y + HEAD + toRow * ROW + ROW / 2;
-    const forward = from.pos.x <= to.pos.x;
-    const x1 = forward ? from.pos.x + CARD_W : from.pos.x;
-    const x2 = forward ? to.pos.x : to.pos.x + CARD_W;
-    const bend = Math.max(36, Math.abs(x2 - x1) / 2);
-    const c1 = x1 + (forward ? bend : -bend);
-    const c2 = x2 + (forward ? -bend : bend);
-    return [{ d: `M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}` }];
-  });
 
-  function startDrag(event: ReactMouseEvent, key: string, pos: { x: number; y: number }) {
+  function startDrag(event: ReactMouseEvent, key: string, pos: DesignPoint) {
     const stage = stageRef.current;
     if (!stage || event.button !== 0) return;
     const rect = stage.getBoundingClientRect();
@@ -108,14 +96,99 @@ export function DiagramDesigner(props: {
     };
   }
 
+  function arrange() {
+    setPositions(layoutTables(model.tables, model.refs));
+    if (stageRef.current) stageRef.current.scrollTo(0, 0);
+    setNote("Arranged tables by relationship.");
+  }
+
+  function insertSnippet(text: string) {
+    const area = codeRef.current;
+    const value = props.dbml;
+    const focused = area !== null && document.activeElement === area;
+    const start = focused && area ? area.selectionStart : value.length;
+    const end = focused && area ? area.selectionEnd : value.length;
+    if (!/^\s*(table|ref)\b/i.test(text)) {
+      const placedColumn = insertColumnSnippet(value, start, text);
+      if (placedColumn) {
+        props.onDbml(placedColumn.dbml);
+        const cursor = placedColumn.cursor;
+        requestAnimationFrame(() => {
+          const node = codeRef.current;
+          if (!node) return;
+          node.focus();
+          node.setSelectionRange(cursor, cursor);
+        });
+        return;
+      }
+    }
+    const lead = start > 0 && value[start - 1] !== "\n" ? "\n" : "";
+    const body = text.endsWith("\n") ? text : `${text}\n`;
+    const chunk = `${lead}${body}`;
+    props.onDbml(value.slice(0, start) + chunk + value.slice(end));
+    const cursor = start + chunk.length;
+    requestAnimationFrame(() => {
+      const node = codeRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(cursor, cursor);
+    });
+  }
+
+  async function saveDesign() {
+    const layout: Record<string, DesignPoint> = {};
+    for (const item of placed) layout[item.key] = item.pos;
+    setBusy(true);
+    setNote("");
+    try {
+      const saved = await props.onSaveFile(fileName, encodeDesign({ engine: props.engine, dbml: props.dbml, positions: layout }));
+      if (saved === "saved") setNote(`Saved ${fileName}.`);
+    } catch (reason) {
+      setNote(errorText(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openDesign() {
+    setBusy(true);
+    setNote("");
+    try {
+      const file = await props.onOpenFile();
+      if (!file) return;
+      const design = decodeDesign(file.contents);
+      props.onDbml(design.dbml);
+      if (design.engine) props.onEngine(design.engine);
+      setPositions(design.positions);
+      const name = /\.dbdesign$/i.test(file.name) ? file.name : file.name.replace(/\.[^.]+$/, "") + ".dbdesign";
+      setFileName(name || "DatabaseDesign.dbdesign");
+      setNote(`Opened ${file.name}.`);
+    } catch (reason) {
+      setNote(errorText(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="diagram-designer">
       <div className="diagram-bar">
         <span className="diagram-title">Database Design</span>
-        <span className="diagram-count">
+        <span className="diagram-count" title={fileName}>
+          {fileName}
+          {" · "}
           {model.tables.length} tables, {model.refs.length} relationships
         </span>
         <span className="spacer" />
+        <button type="button" className="diagram-tool" disabled={busy} onClick={() => void saveDesign()}>
+          Save
+        </button>
+        <button type="button" className="diagram-tool" disabled={busy} onClick={() => void openDesign()}>
+          Open
+        </button>
+        <button type="button" className="diagram-tool" disabled={busy || model.tables.length === 0} onClick={arrange}>
+          Arrange
+        </button>
         <label>
           Engine
           <select value={props.engine} onChange={(event) => props.onEngine(event.target.value as EngineKind)}>
@@ -129,19 +202,60 @@ export function DiagramDesigner(props: {
         </button>
       </div>
       <div className="diagram-body">
-        <textarea
-          className="diagram-code"
-          spellCheck={false}
-          wrap="off"
-          value={props.dbml}
-          onChange={(event) => props.onDbml(event.target.value)}
-          aria-label="Database design"
-        />
-        <div className="diagram-stage" ref={stageRef}>
+        <aside className="diagram-elements">
+          <div className="diagram-side-title">Elements</div>
+          <button type="button" onClick={() => props.onDbml(addTableBlock(props.dbml))}>
+            Table
+          </button>
+          <button type="button" onClick={() => props.onDbml(addRelationshipBlock(props.dbml))}>
+            One to many
+          </button>
+          <button type="button" onClick={() => props.onDbml(addRelationshipLine(props.dbml, "-"))}>
+            One to one
+          </button>
+          <button type="button" onClick={() => props.onDbml(addRelationshipLine(props.dbml, "<>"))}>
+            Many to many
+          </button>
+          <button type="button" disabled={model.tables.length === 0} onClick={arrange}>
+            Arrange
+          </button>
+        </aside>
+        <div className="diagram-editor">
+          <div className="diagram-snippets">
+            <span>Snippets</span>
+            {DBML_SNIPPETS.map((snippet) => (
+              <button key={snippet.id} type="button" title={snippet.title} onClick={() => insertSnippet(snippet.text)}>
+                {snippet.label}
+              </button>
+            ))}
+          </div>
+          <textarea
+            ref={codeRef}
+            className="diagram-code"
+            spellCheck={false}
+            wrap="off"
+            value={props.dbml}
+            onChange={(event) => props.onDbml(event.target.value)}
+            aria-label="Database design"
+          />
+        </div>
+        <div className="diagram-canvas">
+          <div className="diagram-stage" ref={stageRef}>
           <div className="diagram-sheet" style={{ width: bounds.w, height: bounds.h }}>
             <svg className="diagram-lines" width={bounds.w} height={bounds.h}>
-              {lines.map((line, index) => (
-                <path key={index} d={line.d} />
+              {lines.map((line) => (
+                <g key={line.key}>
+                  <title>{line.title}</title>
+                  <path d={line.d} />
+                  {line.marks.map((mark) => (
+                    <path key={mark.key} d={mark.d} />
+                  ))}
+                  {line.labels.map((label) => (
+                    <text key={label.key} x={label.x} y={label.y} textAnchor="middle" dominantBaseline="middle">
+                      {label.text}
+                    </text>
+                  ))}
+                </g>
               ))}
             </svg>
             {placed.map((item) => (
@@ -166,10 +280,17 @@ export function DiagramDesigner(props: {
               </article>
             ))}
           </div>
+          </div>
+          <div className="diagram-legend">
+            <LegendRow left="one" right="one" label="One to one" />
+            <LegendRow left="one" right="many" label="One to many" />
+            <LegendRow left="many" right="many" label="Many to many" />
+          </div>
         </div>
       </div>
-      {model.errors.length > 0 ? (
-        <div className="diagram-errors">
+      {note || model.errors.length > 0 ? (
+        <div className={model.errors.length > 0 ? "diagram-errors" : "diagram-note"}>
+          {note ? <div>{note}</div> : null}
           {model.errors.map((error) => (
             <div key={error}>{error}</div>
           ))}
@@ -177,6 +298,408 @@ export function DiagramDesigner(props: {
       ) : null}
     </div>
   );
+}
+
+type Side = "left" | "right" | "top" | "bottom";
+type Point = { x: number; y: number };
+type Box = { key: string; x: number; y: number; w: number; h: number };
+type Placed = { table: DbmlTable; key: string; pos: DesignPoint };
+type RelLine = {
+  key: string;
+  title: string;
+  d: string;
+  marks: Array<{ key: string; d: string }>;
+  labels: Array<{ key: string; x: number; y: number; text: string }>;
+  right: number;
+  bottom: number;
+};
+
+function relationshipLines(placed: Placed[], refs: DbmlRef[]): RelLine[] {
+  const boxes = placed.map(cardBox);
+  const drafts: Array<{
+    ref: DbmlRef;
+    from: Placed;
+    to: Placed;
+    fromRow: number;
+    toRow: number;
+    fromSide: Side;
+    toSide: Side;
+  }> = [];
+  for (const ref of refs) {
+    const from = placed.find((item) => same(item.table, ref.fromSchema, ref.fromTable));
+    const to = placed.find((item) => same(item.table, ref.toSchema, ref.toTable));
+    if (!from || !to) continue;
+    const fromRow = from.table.columns.findIndex((column) => column.name.toLowerCase() === ref.fromColumn.toLowerCase());
+    const toRow = to.table.columns.findIndex((column) => column.name.toLowerCase() === ref.toColumn.toLowerCase());
+    if (fromRow < 0 || toRow < 0) continue;
+    const fromBox = boxes.find((box) => box.key === from.key);
+    const toBox = boxes.find((box) => box.key === to.key);
+    if (!fromBox || !toBox) continue;
+    const sides = from.key === to.key ? { fromSide: "right" as Side, toSide: "right" as Side } : chooseSides(fromBox, toBox);
+    drafts.push({ ref, from, to, fromRow, toRow, ...sides });
+  }
+  const fromSlots = slotOf(drafts.map((draft) => ({ id: draft, port: `${draft.from.key}:${draft.fromSide}`, at: draft.fromRow })));
+  const toSlots = slotOf(drafts.map((draft) => ({ id: draft, port: `${draft.to.key}:${draft.toSide}`, at: draft.toRow })));
+  const lanes = slotOf(drafts.map((draft) => ({ id: draft, port: `${draft.from.key}|${draft.to.key}|${draft.fromSide}|${draft.toSide}`, at: draft.fromRow })));
+  const seenMarks = new Set<string>();
+  const seenLabels = new Set<string>();
+  return drafts.map((draft) => {
+    const fromBox = boxes.find((box) => box.key === draft.from.key)!;
+    const toBox = boxes.find((box) => box.key === draft.to.key)!;
+    const fromSlot = fromSlots.get(draft) ?? 0;
+    const toSlot = toSlots.get(draft) ?? 0;
+    const fromAnchor = anchorPoint(fromBox, draft.fromSide, draft.fromRow, toBox, fromSlot, portCount(drafts, draft.from.key, draft.fromSide, "from"));
+    const toAnchor = anchorPoint(toBox, draft.toSide, draft.toRow, fromBox, toSlot, portCount(drafts, draft.to.key, draft.toSide, "to"));
+    const obstacles = boxes
+      .filter((box) => box.key !== fromBox.key && box.key !== toBox.key)
+      .map((box) => ({ ...box, x: box.x - 8, y: box.y - 8, w: box.w + 16, h: box.h + 16 }));
+    const points =
+      fromBox.key === toBox.key
+        ? selfLoop(fromBox, fromAnchor, toAnchor, lanes.get(draft) ?? 0)
+        : routePoints(fromAnchor, draft.fromSide, toAnchor, draft.toSide, lanes.get(draft) ?? 0, obstacles);
+    const title = relationTitle(draft.ref.fromEnd, draft.ref.toEnd);
+    let right = 0;
+    let bottom = 0;
+    for (const point of points) {
+      right = Math.max(right, point.x);
+      bottom = Math.max(bottom, point.y);
+    }
+    const fromLabel = labelAt(fromAnchor, draft.fromSide);
+    const toLabel = labelAt(toAnchor, draft.toSide);
+    right = Math.max(right, fromLabel.x + 12, toLabel.x + 12);
+    bottom = Math.max(bottom, fromLabel.y + 12, toLabel.y + 12);
+    const key = `${draft.from.key}.${draft.ref.fromColumn}-${draft.to.key}.${draft.ref.toColumn}`;
+    const marks = [
+      { key: "from", d: cardinalityMark(fromAnchor, draft.fromSide, draft.ref.fromEnd) },
+      { key: "to", d: cardinalityMark(toAnchor, draft.toSide, draft.ref.toEnd) },
+    ].filter((mark) => keepOnce(seenMarks, mark.d));
+    const labels = [
+      { key: "from", ...fromLabel, text: draft.ref.fromEnd === "one" ? "1" : "N" },
+      { key: "to", ...toLabel, text: draft.ref.toEnd === "one" ? "1" : "N" },
+    ].filter((label) => keepOnce(seenLabels, `${n(label.x)}:${n(label.y)}:${label.text}`));
+    return { key, title, d: toPath(points), marks, labels, right, bottom };
+  });
+}
+
+function keepOnce(seen: Set<string>, id: string): boolean {
+  if (seen.has(id)) return false;
+  seen.add(id);
+  return true;
+}
+
+function portCount(
+  drafts: Array<{ from: Placed; to: Placed; fromSide: Side; toSide: Side }>,
+  key: string,
+  side: Side,
+  end: "from" | "to",
+): number {
+  return drafts.filter((draft) => (end === "from" ? draft.from.key === key && draft.fromSide === side : draft.to.key === key && draft.toSide === side)).length;
+}
+
+function slotOf<T>(items: Array<{ id: T; port: string; at: number }>): Map<T, number> {
+  const groups = new Map<string, Array<{ id: T; at: number }>>();
+  for (const item of items) {
+    const group = groups.get(item.port) ?? [];
+    group.push(item);
+    groups.set(item.port, group);
+  }
+  const slots = new Map<T, number>();
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.at - b.at);
+    group.forEach((item, index) => slots.set(item.id, index));
+  }
+  return slots;
+}
+
+function routePoints(from: Point, fromSide: Side, to: Point, toSide: Side, lane: number, obstacles: Box[]): Point[] {
+  const start = shift(from, fromSide, STUB);
+  const end = shift(to, toSide, STUB);
+  const fromHorizontal = fromSide === "left" || fromSide === "right";
+  const toHorizontal = toSide === "left" || toSide === "right";
+  const shiftLane = lane * 14;
+  const options: Point[][] = [];
+  if (fromHorizontal && toHorizontal) {
+    const mid = (start.x + end.x) / 2 + shiftLane;
+    options.push([{ x: mid, y: start.y }, { x: mid, y: end.y }]);
+    options.push(...detours(start, end, obstacles, lane, "h"));
+  } else if (!fromHorizontal && !toHorizontal) {
+    const mid = (start.y + end.y) / 2 + shiftLane;
+    options.push([{ x: start.x, y: mid }, { x: end.x, y: mid }]);
+    options.push(...detours(start, end, obstacles, lane, "v"));
+  } else {
+    options.push([{ x: fromHorizontal ? end.x : start.x, y: fromHorizontal ? start.y : end.y }]);
+    options.push([{ x: fromHorizontal ? start.x : end.x, y: fromHorizontal ? end.y : start.y }]);
+    options.push(...detours(start, end, obstacles, lane, "h"));
+    options.push(...detours(start, end, obstacles, lane, "v"));
+  }
+  for (const mid of options) {
+    const poly = dedupe([from, start, ...mid, end, to]);
+    if (!polylineHits([start, ...mid, end], obstacles)) return poly;
+  }
+  return dedupe([from, start, ...(options[0] ?? []), end, to]);
+}
+
+function detours(start: Point, end: Point, obstacles: Box[], lane: number, axis: "h" | "v"): Point[][] {
+  const pad = 20 + lane * 14;
+  if (axis === "h") {
+    let bottom = Math.max(start.y, end.y);
+    let top = Math.min(start.y, end.y);
+    const x1 = Math.min(start.x, end.x);
+    const x2 = Math.max(start.x, end.x);
+    for (const box of obstacles) {
+      if (box.x + box.w < x1 || box.x > x2) continue;
+      bottom = Math.max(bottom, box.y + box.h);
+      top = Math.min(top, box.y);
+    }
+    const routes: Point[][] = [[{ x: start.x, y: bottom + pad }, { x: end.x, y: bottom + pad }]];
+    if (top - pad >= 12) routes.push([{ x: start.x, y: top - pad }, { x: end.x, y: top - pad }]);
+    return routes;
+  }
+  let right = Math.max(start.x, end.x);
+  let left = Math.min(start.x, end.x);
+  const y1 = Math.min(start.y, end.y);
+  const y2 = Math.max(start.y, end.y);
+  for (const box of obstacles) {
+    if (box.y + box.h < y1 || box.y > y2) continue;
+    right = Math.max(right, box.x + box.w);
+    left = Math.min(left, box.x);
+  }
+  const routes: Point[][] = [[{ x: right + pad, y: start.y }, { x: right + pad, y: end.y }]];
+  if (left - pad >= 12) routes.push([{ x: left - pad, y: start.y }, { x: left - pad, y: end.y }]);
+  return routes;
+}
+
+function selfLoop(box: Box, from: Point, to: Point, lane: number): Point[] {
+  const x = box.x + box.w + STUB + 16 + lane * 14;
+  return [from, { x, y: from.y }, { x, y: to.y }, to];
+}
+
+function polylineHits(points: Point[], boxes: Box[]): boolean {
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const x1 = Math.min(a.x, b.x);
+    const x2 = Math.max(a.x, b.x);
+    const y1 = Math.min(a.y, b.y);
+    const y2 = Math.max(a.y, b.y);
+    for (const box of boxes) {
+      if (x2 > box.x && x1 < box.x + box.w && y2 > box.y && y1 < box.y + box.h) return true;
+    }
+  }
+  return false;
+}
+
+function dedupe(points: Point[]): Point[] {
+  const next: Point[] = [];
+  for (const point of points) {
+    const prev = next[next.length - 1];
+    if (prev && Math.abs(prev.x - point.x) < 0.5 && Math.abs(prev.y - point.y) < 0.5) continue;
+    next.push(point);
+  }
+  return next;
+}
+
+function toPath(points: Point[]): string {
+  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${n(point.x)} ${n(point.y)}`).join(" ");
+}
+
+function chooseSides(from: Box, to: Box): { fromSide: Side; toSide: Side } {
+  const options: Array<{ gap: number; fromSide: Side; toSide: Side }> = [
+    { gap: to.x - (from.x + from.w), fromSide: "right", toSide: "left" },
+    { gap: from.x - (to.x + to.w), fromSide: "left", toSide: "right" },
+    { gap: to.y - (from.y + from.h), fromSide: "bottom", toSide: "top" },
+    { gap: from.y - (to.y + to.h), fromSide: "top", toSide: "bottom" },
+  ];
+  options.sort((a, b) => b.gap - a.gap);
+  return { fromSide: options[0].fromSide, toSide: options[0].toSide };
+}
+
+function anchorPoint(box: Box, side: Side, row: number, toward: Box, slot: number, count: number): Point {
+  if (side === "left" || side === "right") {
+    const y = clamp(box.y + HEAD + row * ROW + ROW / 2, box.y + 8, box.y + box.h - 8);
+    return { x: side === "left" ? box.x : box.x + box.w, y };
+  }
+  const spread = count > 1 ? (slot - (count - 1) / 2) * 16 : 0;
+  const x = clamp(toward.x + toward.w / 2 + spread, box.x + 16, box.x + box.w - 16);
+  return { x, y: side === "top" ? box.y : box.y + box.h };
+}
+
+function cardinalityMark(edge: Point, side: Side, end: RefEnd): string {
+  const away = outward(side);
+  const px = -away.y;
+  const py = away.x;
+  if (end === "one") {
+    const x = edge.x + away.x * 5;
+    const y = edge.y + away.y * 5;
+    return `M ${n(x + px * 6)} ${n(y + py * 6)} L ${n(x - px * 6)} ${n(y - py * 6)}`;
+  }
+  const jx = edge.x + away.x * 13;
+  const jy = edge.y + away.y * 13;
+  const spread = 6;
+  return [
+    `M ${n(jx)} ${n(jy)} L ${n(edge.x + px * spread)} ${n(edge.y + py * spread)}`,
+    `M ${n(jx)} ${n(jy)} L ${n(edge.x)} ${n(edge.y)}`,
+    `M ${n(jx)} ${n(jy)} L ${n(edge.x - px * spread)} ${n(edge.y - py * spread)}`,
+  ].join(" ");
+}
+
+function labelAt(edge: Point, side: Side): Point {
+  const away = outward(side);
+  const px = -away.y;
+  const py = away.x;
+  const sign = side === "left" || side === "bottom" ? 1 : -1;
+  return {
+    x: edge.x + away.x * 14 + px * 11 * sign,
+    y: edge.y + away.y * 14 + py * 11 * sign,
+  };
+}
+
+function outward(side: Side): Point {
+  if (side === "left") return { x: -1, y: 0 };
+  if (side === "right") return { x: 1, y: 0 };
+  if (side === "top") return { x: 0, y: -1 };
+  return { x: 0, y: 1 };
+}
+
+function shift(point: Point, side: Side, distance: number): Point {
+  const away = outward(side);
+  return { x: point.x + away.x * distance, y: point.y + away.y * distance };
+}
+
+function relationTitle(fromEnd: RefEnd, toEnd: RefEnd): string {
+  if (fromEnd === "one" && toEnd === "one") return "One to one";
+  if (fromEnd === "many" && toEnd === "many") return "Many to many";
+  return "One to many";
+}
+
+function LegendRow(props: { left: RefEnd; right: RefEnd; label: string }) {
+  return (
+    <div>
+      <svg width="58" height="16" viewBox="0 0 58 16" aria-hidden="true">
+        <path d="M 6 8 H 52" />
+        <path d={cardinalityMark({ x: 6, y: 8 }, "right", props.left)} />
+        <path d={cardinalityMark({ x: 52, y: 8 }, "left", props.right)} />
+      </svg>
+      <span>{props.label}</span>
+    </div>
+  );
+}
+
+function layoutTables(tables: DbmlTable[], refs: DbmlRef[]): Record<string, DesignPoint> {
+  const positions: Record<string, DesignPoint> = {};
+  const parents: number[][] = tables.map(() => []);
+  const neighbors: number[][] = tables.map(() => []);
+  const linked = new Set<number>();
+  refs.forEach((ref) => {
+    const child = tables.findIndex((table) => same(table, ref.fromSchema, ref.fromTable));
+    const parent = tables.findIndex((table) => same(table, ref.toSchema, ref.toTable));
+    if (child < 0 || parent < 0) return;
+    linked.add(child);
+    linked.add(parent);
+    if (child === parent) return;
+    if (!parents[child].includes(parent)) parents[child].push(parent);
+    if (!neighbors[child].includes(parent)) neighbors[child].push(parent);
+    if (!neighbors[parent].includes(child)) neighbors[parent].push(child);
+  });
+
+  const seen = new Set<number>();
+  const components: number[][] = [];
+  for (let index = 0; index < tables.length; index += 1) {
+    if (seen.has(index) || !linked.has(index)) continue;
+    const component: number[] = [];
+    const stack = [index];
+    seen.add(index);
+    while (stack.length > 0) {
+      const current = stack.pop() ?? index;
+      component.push(current);
+      for (const next of neighbors[current]) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        stack.push(next);
+      }
+    }
+    components.push(component);
+  }
+
+  let cursorY = MARGIN;
+  for (const component of components) {
+    const rank = new Map<number, number>();
+    const visiting = new Set<number>();
+    const depth = (index: number): number => {
+      const cached = rank.get(index);
+      if (cached !== undefined) return cached;
+      if (visiting.has(index)) return 0;
+      visiting.add(index);
+      const localParents = parents[index].filter((parent) => component.includes(parent));
+      const value = localParents.length === 0 ? 0 : Math.max(...localParents.map((parent) => depth(parent) + 1));
+      visiting.delete(index);
+      rank.set(index, value);
+      return value;
+    };
+    component.forEach((index) => depth(index));
+    const columns = new Map<number, number[]>();
+    let maxRank = 0;
+    for (const index of component) {
+      const level = rank.get(index) ?? 0;
+      maxRank = Math.max(maxRank, level);
+      const column = columns.get(level) ?? [];
+      column.push(index);
+      columns.set(level, column);
+    }
+    const top = cursorY;
+    for (let level = 0; level <= maxRank; level += 1) {
+      const column = columns.get(level) ?? [];
+      const previous = columns.get(level - 1) ?? [];
+      column.sort((a, b) => {
+        const delta = bary(a, previous, parents) - bary(b, previous, parents);
+        if (Math.abs(delta) > 0.01) return delta;
+        if (parents[b].includes(a)) return -1;
+        if (parents[a].includes(b)) return 1;
+        return a - b;
+      });
+      let y = top;
+      const x = MARGIN + level * (CARD_W + GAP_X);
+      for (const index of column) {
+        positions[tableKey(tables[index].schema, tables[index].name)] = { x, y };
+        y += cardHeight(tables[index]) + GAP_Y;
+      }
+      cursorY = Math.max(cursorY, y);
+    }
+    cursorY += 28;
+  }
+
+  const islands = tables.map((_, index) => index).filter((index) => !linked.has(index));
+  const islandColumns = Math.max(1, Math.min(3, islands.length));
+  const tops = Array.from({ length: islandColumns }, () => cursorY);
+  islands.forEach((index) => {
+    let column = 0;
+    for (let next = 1; next < islandColumns; next += 1) if (tops[next] < tops[column]) column = next;
+    positions[tableKey(tables[index].schema, tables[index].name)] = { x: MARGIN + column * (CARD_W + GAP_X), y: tops[column] };
+    tops[column] += cardHeight(tables[index]) + GAP_Y;
+  });
+  return positions;
+}
+
+function bary(index: number, previous: number[], parents: number[][]): number {
+  const weights = parents[index].map((parent) => previous.indexOf(parent)).filter((at) => at >= 0);
+  if (weights.length === 0) return index;
+  return weights.reduce((sum, value) => sum + value, 0) / weights.length;
+}
+
+function cardBox(item: Placed): Box {
+  return { key: item.key, x: item.pos.x, y: item.pos.y, w: CARD_W, h: cardHeight(item.table) };
+}
+
+function cardHeight(table: DbmlTable): number {
+  return HEAD + Math.max(table.columns.length, 1) * ROW;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function n(value: number): number {
+  return Math.round(value);
 }
 
 function same(table: DbmlTable, schema: string, name: string): boolean {

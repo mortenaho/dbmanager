@@ -795,11 +795,12 @@ kbd {
   background: #fff;
 }
 .diagram-bar {
-  height: 34px;
+  min-height: 34px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  padding: 0 8px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(#fafafa, #eeeeee);
   flex: none;
@@ -834,19 +835,77 @@ kbd {
   border-radius: 2px;
 }
 .diagram-go:disabled { opacity: 0.55; }
+.diagram-tool {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  border-radius: 2px;
+  flex: none;
+}
+.diagram-tool:hover:not(:disabled) { background: var(--hover); }
 .diagram-body {
   flex: 1;
   min-height: 0;
   display: flex;
 }
+.diagram-elements {
+  width: 148px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-right: 1px solid var(--border);
+  background: #fafafa;
+}
+.diagram-side-title, .diagram-snippets span {
+  font-weight: 600;
+  color: var(--muted);
+}
+.diagram-elements button {
+  height: 28px;
+  text-align: left;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 2px;
+}
+.diagram-elements button:hover:not(:disabled) { background: var(--hover); border-color: #c2ddf5; }
+.diagram-editor {
+  flex: 1 1 380px;
+  width: auto;
+  max-width: 420px;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+}
+.diagram-snippets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: #f7f7f7;
+  flex: none;
+}
+.diagram-snippets button {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 2px;
+}
+.diagram-snippets button:hover { background: var(--hover); border-color: #c2ddf5; }
 .diagram-code {
-  flex: 0 0 42%;
-  width: 42%;
-  max-width: 520px;
+  flex: 1;
+  width: 100%;
   min-width: 0;
+  min-height: 0;
   resize: none;
   border: 0;
-  border-right: 1px solid var(--border);
   padding: 10px 12px;
   font-family: Consolas, "Ubuntu Mono", "Liberation Mono", monospace;
   font-size: 13px;
@@ -856,13 +915,58 @@ kbd {
   white-space: pre;
   overflow: auto;
 }
+.diagram-note {
+  max-height: 72px;
+  overflow: auto;
+  flex: none;
+  background: #f3f8fc;
+  color: #1e4b75;
+  border-top: 1px solid #c5d8ea;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.diagram-canvas {
+  position: relative;
+  flex: 1 1 320px;
+  min-width: 220px;
+  min-height: 0;
+}
 .diagram-stage {
-  flex: 1;
-  min-width: 0;
+  position: absolute;
+  inset: 0;
   overflow: auto;
   background-color: #f6f6f6;
   background-image: radial-gradient(#d5d5d5 1px, transparent 1px);
   background-size: 16px 16px;
+}
+.diagram-legend {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  font-size: 11px;
+  color: #333;
+  pointer-events: none;
+}
+.diagram-legend div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.diagram-legend svg path {
+  fill: none;
+  stroke: #4a4a4a;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .diagram-sheet { position: relative; }
 .diagram-lines {
@@ -874,8 +978,16 @@ kbd {
 }
 .diagram-lines path {
   fill: none;
-  stroke: #6a6a6a;
+  stroke: #4a4a4a;
   stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.diagram-lines text {
+  fill: #174a7c;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font);
 }
 .diagram-card {
   position: absolute;

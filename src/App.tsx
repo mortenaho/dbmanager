@@ -546,6 +546,45 @@ export default function App() {
     return "saved";
   }
 
+  async function openTextFile(): Promise<{ name: string; contents: string } | null> {
+    const tauri = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
+    if (!tauri) {
+      return new Promise((resolve) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".dbdesign,.dbml,.json,text/plain";
+        let settled = false;
+        const finish = (value: { name: string; contents: string } | null) => {
+          if (settled) return;
+          settled = true;
+          resolve(value);
+        };
+        input.onchange = () => {
+          const file = input.files?.[0];
+          if (!file) {
+            finish(null);
+            return;
+          }
+          void file.text().then((contents) => finish({ name: file.name, contents })).catch(() => finish(null));
+        };
+        input.addEventListener("cancel", () => finish(null));
+        input.click();
+      });
+    }
+    const picked = await invoke<string | null>("plugin:dialog|open", {
+      options: {
+        title: "Open Database Design",
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Database design", extensions: ["dbdesign", "dbml"] }],
+      },
+    });
+    if (!picked) return null;
+    const contents = await invoke<string>("read_text_file", { path: picked });
+    const name = picked.split(/[/\\]/).pop() || "DatabaseDesign.dbdesign";
+    return { name, contents };
+  }
+
   async function exportSets(format: "xlsx" | "json", sets: ResultSet[], title: string) {
     const grids = sets.filter((set) => set.columns.length > 0);
     if (grids.length === 0) {
@@ -1295,6 +1334,10 @@ export default function App() {
                   engine={designEngine}
                   onDbml={setDesignDbml}
                   onEngine={setDesignEngine}
+                  onSaveFile={(fileName, contents) =>
+                    saveFile(fileName, contents, { name: "Database design", extensions: ["dbdesign"] })
+                  }
+                  onOpenFile={openTextFile}
                   onImplement={(sql) => {
                     const current = tabs.find((tab) => tab.id === activeTabId);
                     const connection = connections.find((item) => item.id === current?.connectionId) ?? connections[0] ?? null;

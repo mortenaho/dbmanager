@@ -300,6 +300,19 @@ pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn read_text_file(path: String) -> Result<String, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("Choose a file path.".into());
+    }
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if meta.len() > 2_000_000 {
+        return Err("The design file is too large.".into());
+    }
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn write_binary_file(path: String, contents_base64: String) -> Result<(), String> {
     let path = path.trim();
     if path.is_empty() {
