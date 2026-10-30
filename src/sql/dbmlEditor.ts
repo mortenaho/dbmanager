@@ -1,5 +1,4 @@
 import type { Monaco } from "@monaco-editor/react";
-import type { editor, Position } from "monaco-editor";
 import type { EngineKind } from "../types";
 import { engineTypes } from "./tableDesign";
 
@@ -34,11 +33,35 @@ const TYPES = [
 
 const SETTINGS = ["pk", "increment", "unique", "not null", "null", "ref", "default", "note", "primary key"];
 
-let designEngine: EngineKind = "mssql";
 let registered = false;
 
-export function setDbmlEngine(engine: EngineKind) {
-  designEngine = engine;
+export type DbmlHint = { label: string; insert: string; detail: string };
+
+export function dbmlHints(engine: EngineKind, before: string, source: string): DbmlHint[] {
+  const prefix = /[A-Za-z_][\w]*$/.exec(before)?.[0] ?? "";
+  const items: DbmlHint[] = [];
+  if (insideBrackets(before)) {
+    for (const setting of SETTINGS) items.push({ label: setting, insert: setting, detail: "setting" });
+  } else if (typePosition(before)) {
+    for (const type of typeSuggestions(engine)) {
+      items.push({ label: type.label, insert: plainInsert(type.insert), detail: "type" });
+    }
+  } else if (/^\s*\w*$/.test(before)) {
+    for (const keyword of ["Table", "Ref"]) items.push({ label: keyword, insert: keyword, detail: "keyword" });
+  }
+  const dotted = /([A-Za-z_][\w]*)\.\w*$/.exec(before);
+  if (dotted) {
+    for (const column of columnsOf(source, dotted[1])) items.push({ label: column, insert: column, detail: dotted[1] });
+  } else if (/\bref\b/i.test(before)) {
+    for (const table of tableNames(source)) items.push({ label: table, insert: table, detail: "table" });
+  }
+  const showAll = typePosition(before) || insideBrackets(before);
+  if (!prefix && !showAll) return [];
+  const filtered = prefix
+    ? items.filter((item) => item.label.toLowerCase().startsWith(prefix.toLowerCase()))
+    : items;
+  if (filtered.length === 1 && filtered[0].label.toLowerCase() === prefix.toLowerCase()) return [];
+  return filtered;
 }
 
 export function registerDbmlEditor(monaco: Monaco) {
@@ -107,77 +130,6 @@ export function registerDbmlEditor(monaco: Monaco) {
     },
   });
 
-  monaco.languages.registerCompletionItemProvider("dbml", {
-    triggerCharacters: [" ", ".", "[", ","],
-    provideCompletionItems(model: editor.ITextModel, position: Position) {
-      const line = model.getLineContent(position.lineNumber);
-      const before = line.slice(0, position.column - 1);
-      const word = model.getWordUntilPosition(position);
-      const range = {
-        startLineNumber: position.lineNumber,
-        endLineNumber: position.lineNumber,
-        startColumn: word.startColumn,
-        endColumn: word.endColumn,
-      };
-      const kinds = monaco.languages.CompletionItemKind;
-      const snippet = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet;
-      const items: Array<{
-        label: string;
-        insertText: string;
-        kind: number;
-        detail: string;
-        sortText: string;
-        snippet?: boolean;
-        filterText?: string;
-      }> = [];
-
-      if (insideBrackets(before)) {
-        for (const setting of SETTINGS) {
-          items.push({ label: setting, insertText: setting, kind: kinds.Property, detail: "setting", sortText: `0${setting}` });
-        }
-      } else if (typePosition(before)) {
-        for (const type of typeSuggestions(designEngine)) {
-          items.push({
-            label: type.label,
-            insertText: type.insert,
-            kind: kinds.TypeParameter,
-            detail: "type",
-            sortText: `0${type.label}`,
-            snippet: type.snippet,
-            filterText: type.label,
-          });
-        }
-      } else if (/^\s*\w*$/.test(before)) {
-        for (const keyword of ["Table", "Ref"]) {
-          items.push({ label: keyword, insertText: keyword, kind: kinds.Keyword, detail: "keyword", sortText: `0${keyword}` });
-        }
-      }
-
-      const dotted = /([A-Za-z_][\w]*)\.\w*$/.exec(before);
-      if (dotted) {
-        for (const column of columnsOf(model.getValue(), dotted[1])) {
-          items.push({ label: column, insertText: column, kind: kinds.Field, detail: dotted[1], sortText: `1${column}` });
-        }
-      } else if (/\bref\b/i.test(before)) {
-        for (const table of tableNames(model.getValue())) {
-          items.push({ label: table, insertText: table, kind: kinds.Struct, detail: "table", sortText: `1${table}` });
-        }
-      }
-
-      return {
-        suggestions: items.map((item) => ({
-          label: item.label,
-          kind: item.kind,
-          insertText: item.insertText,
-          insertTextRules: item.snippet ? snippet : undefined,
-          detail: item.detail,
-          filterText: item.filterText,
-          range,
-          sortText: item.sortText,
-        })),
-      };
-    },
-  });
 }
 
 function insideBrackets(before: string): boolean {
@@ -189,14 +141,18 @@ function typePosition(before: string): boolean {
   return /^\s*[A-Za-z_][\w]*\s+[A-Za-z_]*$/.test(before);
 }
 
-function typeSuggestions(engine: EngineKind): Array<{ label: string; insert: string; snippet: boolean }> {
+function typeSuggestions(engine: EngineKind): Array<{ label: string; insert: string }> {
   const sized = new Set(["varchar", "nvarchar", "char", "nchar"]);
   const decimal = new Set(["decimal", "numeric"]);
   return engineTypes(engine).map((type) => {
-    if (sized.has(type)) return { label: type, insert: `${type}(\${1:50})`, snippet: true };
-    if (decimal.has(type)) return { label: type, insert: `${type}(\${1:18}, \${2:0})`, snippet: true };
-    return { label: type, insert: type, snippet: false };
+    if (sized.has(type)) return { label: type, insert: `${type}(\${1:50})` };
+    if (decimal.has(type)) return { label: type, insert: `${type}(\${1:18}, \${2:0})` };
+    return { label: type, insert: type };
   });
+}
+
+function plainInsert(insert: string): string {
+  return insert.replace(/\$\{\d+:([^}]*)\}/g, "$1");
 }
 
 function tableNames(source: string): string[] {

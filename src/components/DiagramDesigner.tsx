@@ -1,9 +1,7 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import {
-  addRelationshipBlock,
-  addRelationshipLine,
-  addTableBlock,
   DBML_SNIPPETS,
   decodeDesign,
   diagramToSql,
@@ -16,8 +14,10 @@ import {
   type DesignPoint,
   type RefEnd,
 } from "../sql/dbml";
-import { registerDbmlEditor, setDbmlEngine } from "../sql/dbmlEditor";
+import { dbmlHints, registerDbmlEditor, type DbmlHint } from "../sql/dbmlEditor";
 import { errorText, type EngineKind } from "../types";
+
+const hintKey = { tab: 2, enter: 3, escape: 9, space: 10, up: 16, down: 18, ctrl: 2048 };
 import {
   ArrangeIcon,
   HistoryIcon,
@@ -68,6 +68,7 @@ export function DiagramDesigner(props: {
   const [fileName, setFileName] = useState("DatabaseDesign.dbdesign");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editorWidth, setEditorWidth] = useState(360);
   const stageRef = useRef<HTMLDivElement>(null);
   const codeRef = useRef<Parameters<OnMount>[0] | null>(null);
   const drag = useRef<{ key: string; dx: number; dy: number } | null>(null);
@@ -130,9 +131,32 @@ export function DiagramDesigner(props: {
     setNote("Arranged tables by relationship.");
   }
 
-  useEffect(() => {
-    setDbmlEngine(props.engine);
-  }, [props.engine]);
+  const engineRef = useRef(props.engine);
+  engineRef.current = props.engine;
+  const suggestRef = useRef<SuggestMenu | null>(null);
+  const [suggest, setSuggest] = useState<SuggestMenu | null>(null);
+
+  function closeSuggest() {
+    suggestRef.current = null;
+    setSuggest(null);
+  }
+
+  function applyHint(editor: Parameters<OnMount>[0], menu: SuggestMenu, item: DbmlHint) {
+    editor.executeEdits("hint", [
+      {
+        range: {
+          startLineNumber: menu.line,
+          endLineNumber: menu.line,
+          startColumn: menu.startColumn,
+          endColumn: menu.endColumn,
+        },
+        text: item.insert,
+      },
+    ]);
+    editor.setPosition({ lineNumber: menu.line, column: menu.startColumn + item.insert.length });
+    closeSuggest();
+    editor.focus();
+  }
 
   function placeCursor(offset: number, length: number) {
     const apply = (tries: number) => {
@@ -208,6 +232,22 @@ export function DiagramDesigner(props: {
     }
   }
 
+  function startEditorResize(event: ReactMouseEvent) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = editorWidth;
+    const move = (ev: MouseEvent) => {
+      const limit = Math.max(420, window.innerWidth - 280);
+      setEditorWidth(Math.min(limit, Math.max(240, startWidth + ev.clientX - startX)));
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
   return (
     <div className="diagram-designer">
       <div className="diagram-bar">
@@ -244,30 +284,7 @@ export function DiagramDesigner(props: {
         </button>
       </div>
       <div className="diagram-body">
-        <aside className="diagram-elements">
-          <div className="diagram-side-title">Elements</div>
-          <button type="button" onClick={() => props.onDbml(addTableBlock(props.dbml))}>
-            <TableIcon size={14} />
-            Table
-          </button>
-          <button type="button" onClick={() => props.onDbml(addRelationshipBlock(props.dbml))}>
-            <OneToManyIcon />
-            One to many
-          </button>
-          <button type="button" onClick={() => props.onDbml(addRelationshipLine(props.dbml, "-"))}>
-            <OneToOneIcon />
-            One to one
-          </button>
-          <button type="button" onClick={() => props.onDbml(addRelationshipLine(props.dbml, "<>"))}>
-            <ManyToManyIcon />
-            Many to many
-          </button>
-          <button type="button" disabled={model.tables.length === 0} onClick={arrange}>
-            <ArrangeIcon />
-            Arrange
-          </button>
-        </aside>
-        <div className="diagram-editor">
+        <div className="diagram-editor" style={{ width: editorWidth }}>
           <div className="diagram-snippets">
             <span>Snippets</span>
             {DBML_SNIPPETS.map((snippet) => (
@@ -287,14 +304,69 @@ export function DiagramDesigner(props: {
               onChange={(value) => props.onDbml(value ?? "")}
               onMount={(codeEditor) => {
                 codeRef.current = codeEditor;
-                setDbmlEngine(props.engine);
+                const showHints = () => {
+                  const model = codeEditor.getModel();
+                  const position = codeEditor.getPosition();
+                  if (!model || !position) {
+                    closeSuggest();
+                    return;
+                  }
+                  const before = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+                  const items = dbmlHints(engineRef.current, before, model.getValue());
+                  const coords = codeEditor.getScrolledVisiblePosition(position);
+                  const box = codeEditor.getDomNode()?.getBoundingClientRect();
+                  if (items.length === 0 || !coords || !box) {
+                    closeSuggest();
+                    return;
+                  }
+                  const word = model.getWordUntilPosition(position);
+                  const menuHeight = Math.min(items.length, 8) * 32 + 8;
+                  const below = box.top + coords.top + coords.height + 4;
+                  const top = below + menuHeight > window.innerHeight ? Math.max(8, box.top + coords.top - menuHeight - 4) : below;
+                  const menu: SuggestMenu = {
+                    items,
+                    index: 0,
+                    top,
+                    left: Math.max(8, Math.min(box.left + coords.left, window.innerWidth - 220)),
+                    line: position.lineNumber,
+                    startColumn: word.startColumn,
+                    endColumn: word.endColumn,
+                  };
+                  suggestRef.current = menu;
+                  setSuggest(menu);
+                };
+                codeEditor.onDidChangeModelContent(showHints);
+                codeEditor.onDidChangeCursorPosition(showHints);
+                codeEditor.addCommand(hintKey.ctrl | hintKey.space, showHints);
+                codeEditor.onKeyDown((event) => {
+                  const menu = suggestRef.current;
+                  if (!menu) return;
+                  if (event.keyCode === hintKey.down || event.keyCode === hintKey.up) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const delta = event.keyCode === hintKey.down ? 1 : -1;
+                    const next = { ...menu, index: (menu.index + delta + menu.items.length) % menu.items.length };
+                    suggestRef.current = next;
+                    setSuggest(next);
+                    return;
+                  }
+                  if (event.keyCode === hintKey.enter || event.keyCode === hintKey.tab) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    applyHint(codeEditor, menu, menu.items[menu.index]);
+                    return;
+                  }
+                  if (event.keyCode === hintKey.escape) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeSuggest();
+                  }
+                });
               }}
               options={{
                 fontFamily: "Consolas, Liberation Mono, monospace",
                 fontSize: 13,
                 lineHeight: 20,
-                suggestFontSize: 13,
-                suggestLineHeight: 30,
                 minimap: { enabled: false },
                 scrollBeyondLastLine: false,
                 wordWrap: "off",
@@ -313,23 +385,15 @@ export function DiagramDesigner(props: {
                 autoClosingBrackets: "always",
                 autoClosingQuotes: "always",
                 fixedOverflowWidgets: true,
-                snippetSuggestions: "top",
                 wordBasedSuggestions: "off",
-                suggestOnTriggerCharacters: true,
-                acceptSuggestionOnEnter: "on",
-                quickSuggestions: { other: true, comments: false, strings: false },
-                suggest: {
-                  preview: false,
-                  showSnippets: true,
-                  showIcons: true,
-                  filterGraceful: false,
-                  insertMode: "replace",
-                },
+                suggestOnTriggerCharacters: false,
+                quickSuggestions: false,
                 ariaLabel: "Database design",
               }}
             />
           </div>
         </div>
+        <div className="splitter-v" role="separator" aria-orientation="vertical" aria-label="Resize code editor" onMouseDown={startEditorResize} />
         <div className="diagram-canvas">
           <div className="diagram-stage" ref={stageRef}>
           <div className="diagram-sheet" style={{ width: bounds.w, height: bounds.h }}>
@@ -387,9 +451,49 @@ export function DiagramDesigner(props: {
           ))}
         </div>
       ) : null}
+      {suggest
+        ? createPortal(
+            <div className="dbml-suggest" style={{ top: suggest.top, left: suggest.left }} role="listbox">
+              {suggest.items.map((item, index) => (
+                <button
+                  key={`${item.detail}-${item.label}`}
+                  type="button"
+                  role="option"
+                  aria-selected={index === suggest.index}
+                  className={index === suggest.index ? "on" : ""}
+                  ref={index === suggest.index ? (node) => node?.scrollIntoView({ block: "nearest" }) : undefined}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => {
+                    const next = { ...suggest, index };
+                    suggestRef.current = next;
+                    setSuggest(next);
+                  }}
+                  onClick={() => {
+                    const editor = codeRef.current;
+                    if (editor) applyHint(editor, suggest, item);
+                  }}
+                >
+                  <span>{item.label}</span>
+                  <small>{item.detail}</small>
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
+
+type SuggestMenu = {
+  items: DbmlHint[];
+  index: number;
+  top: number;
+  left: number;
+  line: number;
+  startColumn: number;
+  endColumn: number;
+};
 
 type Side = "left" | "right" | "top" | "bottom";
 type Point = { x: number; y: number };
