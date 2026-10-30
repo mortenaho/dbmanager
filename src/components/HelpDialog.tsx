@@ -41,7 +41,7 @@ const SECTIONS: Array<{ title: string; rows: Array<{ action: string; keys: strin
       { action: "Keyboard shortcuts", keys: ["F1"] },
       { action: "Close a dialog", keys: ["Esc"] },
       { action: "History", keys: ["View menu"] },
-      { action: "Ask", keys: ["Tools menu"] },
+      { action: "AI", keys: ["AI menu"] },
       { action: "Options", keys: ["Tools menu"] },
     ],
   },

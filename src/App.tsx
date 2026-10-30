@@ -112,6 +112,7 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
+  const [aiWidth, setAiWidth] = useState(360);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [menu, setMenu] = useState<string | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null);
@@ -164,7 +165,7 @@ export default function App() {
 
   useEffect(() => {
     editors.current.get(activeTabId ?? "")?.layout();
-  }, [activeTabId, resultsHeight, explorerWidth, showExplorer]);
+  }, [activeTabId, resultsHeight, explorerWidth, showExplorer, askOpen, aiWidth]);
 
   useEffect(() => {
     loadProfiles()
@@ -194,8 +195,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (askOpen) setAskOpen(false);
-        else if (settingsOpen) setSettingsOpen(false);
+        if (settingsOpen) setSettingsOpen(false);
         else if (helpOpen) setHelpOpen(false);
         else if (aboutOpen) setAboutOpen(false);
         else if (historyOpen) setHistoryOpen(false);
@@ -208,7 +208,7 @@ export default function App() {
         setHelpOpen((open) => !open);
         return;
       }
-      if (connectOpen || aboutOpen || rename || historyOpen || settingsOpen || helpOpen || askOpen) return;
+      if (connectOpen || aboutOpen || rename || historyOpen || settingsOpen || helpOpen) return;
       const typing = event.target instanceof HTMLElement && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA");
       if (event.key === "F5" && event.ctrlKey) {
         event.preventDefault();
@@ -232,7 +232,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [connectOpen, aboutOpen, helpOpen, rename, historyOpen, settingsOpen, askOpen]);
+  }, [connectOpen, aboutOpen, helpOpen, rename, historyOpen, settingsOpen]);
 
   function makeTab(connectionId: string | null, database: string, sql = "", title = ""): QueryTab {
     const custom = title.trim();
@@ -787,15 +787,18 @@ export default function App() {
     if (context?.connectionId === id) setContext(null);
   }
 
-  function startDrag(kind: "explorer" | "results", event: ReactMouseEvent) {
+  function startDrag(kind: "explorer" | "results" | "ai", event: ReactMouseEvent) {
     event.preventDefault();
     const startX = event.clientX;
     const startY = event.clientY;
     const startWidth = explorerWidth;
     const startHeight = resultsHeight;
+    const startAi = aiWidth;
     const move = (ev: MouseEvent) => {
       if (kind === "explorer") {
         setExplorerWidth(Math.min(560, Math.max(200, startWidth + ev.clientX - startX)));
+      } else if (kind === "ai") {
+        setAiWidth(Math.min(640, Math.max(280, startAi - (ev.clientX - startX))));
       } else {
         setResultsHeight(Math.min(window.innerHeight - 220, Math.max(110, startHeight - (ev.clientY - startY))));
       }
@@ -1026,7 +1029,6 @@ export default function App() {
           onHover={() => setMenu("Tools")}
           onDismiss={() => setMenu(null)}
           items={[
-            { label: "Ask...", hint: "", icon: <AskIcon />, action: () => setAskOpen(true) },
             { label: "Database Design", hint: "", icon: <DesignIcon />, action: () => openDesign() },
             { label: "sep" },
             { label: "Options...", hint: "", icon: <OptionsIcon />, action: () => setSettingsOpen(true) },
@@ -1045,6 +1047,17 @@ export default function App() {
             { label: "About DB Manager", hint: "", icon: <InfoIcon />, action: () => setAboutOpen(true) },
           ]}
         />
+        <button
+          type="button"
+          className={askOpen ? "menu-ai on" : "menu-ai"}
+          aria-expanded={askOpen}
+          onClick={() => {
+            setMenu(null);
+            setAskOpen((open) => !open);
+          }}
+        >
+          AI
+        </button>
       </div>
 
       <div className="toolbar">
@@ -1065,9 +1078,14 @@ export default function App() {
         <button className="tool" title="Format SQL (Shift+Alt+F)" disabled={editorLocked || !activeTab} onClick={() => formatQuery()}>
           <FormatIcon />
         </button>
-        <button className="tool" title="Ask" onClick={() => setAskOpen(true)}>
+        <button
+          className={askOpen ? "tool on" : "tool"}
+          title="AI"
+          aria-expanded={askOpen}
+          onClick={() => setAskOpen((open) => !open)}
+        >
           <AskIcon />
-          <span>Ask</span>
+          <span>AI</span>
         </button>
         <span className="tool-sep" />
         <select
@@ -1516,6 +1534,26 @@ export default function App() {
             </>
           )}
         </section>
+        {askOpen ? (
+          <>
+            <div className="splitter-v" role="separator" aria-orientation="vertical" aria-label="Resize AI" onMouseDown={(event) => startDrag("ai", event)} />
+            <AskDialog
+              width={aiWidth}
+              target={askTarget}
+              onClose={() => setAskOpen(false)}
+              onAsk={async (question) => {
+                const connection = barConnection ?? connectionsRef.current[0];
+                if (!connection) throw new Error("Connect to a database first.");
+                const database = barDatabase || connection.database;
+                if (!database) throw new Error("Choose a database first.");
+                const columns = await listAllColumns(connection.id, database);
+                const reply = await askSql(engineLabel(connection.engine), database, schemaText(columns).text, question);
+                openTab(connection.id, database, sqlWithNote(reply.sql, reply.note), "Ask");
+                showNotice(reply.note || "Draft SQL is in a new query. Press F5 to run it.");
+              }}
+            />
+          </>
+        ) : null}
       </div>
 
       <footer className="status-bar">
@@ -1560,22 +1598,6 @@ export default function App() {
           onOpenQuery={(database, sql) => openTab(activeTab?.connectionId ?? connections[0]?.id ?? null, database, sql)}
           onExport={(format, detail: HistoryDetail) => void exportSets(format, detail.resultSets, "history")}
           onClear={() => void clearSavedHistory()}
-        />
-      ) : null}
-      {askOpen ? (
-        <AskDialog
-          target={askTarget}
-          onClose={() => setAskOpen(false)}
-          onAsk={async (question) => {
-            const connection = barConnection ?? connectionsRef.current[0];
-            if (!connection) throw new Error("Connect to a database first.");
-            const database = barDatabase || connection.database;
-            if (!database) throw new Error("Choose a database first.");
-            const columns = await listAllColumns(connection.id, database);
-            const reply = await askSql(engineLabel(connection.engine), database, schemaText(columns).text, question);
-            openTab(connection.id, database, sqlWithNote(reply.sql, reply.note), "Ask");
-            showNotice(reply.note || "Draft SQL is in a new query. Press F5 to run it.");
-          }}
         />
       ) : null}
       {settingsOpen ? (
