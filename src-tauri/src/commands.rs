@@ -5,6 +5,7 @@ use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::ask;
 use crate::history::{self, HistoryDb, QueryRecord};
 use crate::model::{
     default_database, display_name, ColumnInfo, ColumnRef, ConnectResponse, Credentials, DbObject,
@@ -580,8 +581,39 @@ pub fn load_settings(history: State<'_, HistoryDb>) -> Result<history::AppSettin
 }
 
 #[tauri::command]
-pub fn save_settings(history: State<'_, HistoryDb>, history_days: u32) -> Result<history::AppSettings, String> {
-    history.with_conn(|conn| history::save_settings(conn, history_days))
+pub fn save_settings(
+    history: State<'_, HistoryDb>,
+    history_days: u32,
+    ai_base_url: Option<String>,
+    ai_model: Option<String>,
+    ai_api_key: Option<String>,
+) -> Result<history::AppSettings, String> {
+    history.with_conn(|conn| {
+        history::save_settings(conn, history_days)?;
+        if ai_base_url.is_some() || ai_model.is_some() || ai_api_key.is_some() {
+            let current = history::load_settings(conn)?;
+            history::save_assistant(
+                conn,
+                ai_base_url.as_deref().unwrap_or(&current.ai_base_url),
+                ai_model.as_deref().unwrap_or(&current.ai_model),
+                ai_api_key.as_deref().unwrap_or(&current.ai_api_key),
+            )
+        } else {
+            history::load_settings(conn)
+        }
+    })
+}
+
+#[tauri::command]
+pub fn ask_sql(
+    history: State<'_, HistoryDb>,
+    engine: String,
+    database: String,
+    schema: String,
+    question: String,
+) -> Result<ask::AskReply, String> {
+    let settings = history.with_conn(history::load_settings)?;
+    ask::complete(&settings, &engine, &database, &schema, &question)
 }
 
 async fn session(state: &DbState, id: &str) -> Result<Arc<Session>, String> {

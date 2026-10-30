@@ -112,6 +112,14 @@ export type AppEvent = {
 
 export type AppSettings = {
   historyDays: number;
+  aiBaseUrl: string;
+  aiModel: string;
+  aiApiKey: string;
+};
+
+export type AskReply = {
+  sql: string;
+  note: string;
 };
 
 export type QueryTab = {

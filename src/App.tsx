@@ -7,6 +7,7 @@ import {
   connectServer,
   disconnectServer,
   executeSql,
+  askSql,
   listAllColumns,
   listDatabases,
   listObjects,
@@ -19,6 +20,8 @@ import {
   saveProfile,
   scriptRoutine,
 } from "./api";
+import { schemaText, sqlWithNote } from "./ask";
+import { AskDialog } from "./components/AskDialog";
 import { ConnectDialog } from "./components/ConnectDialog";
 import { DetailsPane, type DetailsTarget } from "./components/DetailsPane";
 import { DiagramDesigner } from "./components/DiagramDesigner";
@@ -26,6 +29,7 @@ import { TableDesigner } from "./components/TableDesigner";
 import { HelpDialog } from "./components/HelpDialog";
 import { HistoryDialog } from "./components/HistoryDialog";
 import {
+  AskIcon,
   BackupIcon,
   CheckIcon,
   CloseAllIcon,
@@ -107,6 +111,7 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [menu, setMenu] = useState<string | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null);
@@ -152,6 +157,10 @@ export default function App() {
       : null;
   const barConnection = detailsConnection ?? activeConnection;
   const barDatabase = detailsConnection ? details?.database ?? "" : activeTab?.database ?? "";
+  const askConnection = barConnection ?? connections[0] ?? null;
+  const askTarget = askConnection
+    ? `${askConnection.name} · ${barDatabase || askConnection.database || "no database"}`
+    : "";
 
   useEffect(() => {
     editors.current.get(activeTabId ?? "")?.layout();
@@ -185,7 +194,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (settingsOpen) setSettingsOpen(false);
+        if (askOpen) setAskOpen(false);
+        else if (settingsOpen) setSettingsOpen(false);
         else if (helpOpen) setHelpOpen(false);
         else if (aboutOpen) setAboutOpen(false);
         else if (historyOpen) setHistoryOpen(false);
@@ -198,7 +208,7 @@ export default function App() {
         setHelpOpen((open) => !open);
         return;
       }
-      if (connectOpen || aboutOpen || rename || historyOpen || settingsOpen || helpOpen) return;
+      if (connectOpen || aboutOpen || rename || historyOpen || settingsOpen || helpOpen || askOpen) return;
       const typing = event.target instanceof HTMLElement && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA");
       if (event.key === "F5" && event.ctrlKey) {
         event.preventDefault();
@@ -222,7 +232,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [connectOpen, aboutOpen, helpOpen, rename, historyOpen, settingsOpen]);
+  }, [connectOpen, aboutOpen, helpOpen, rename, historyOpen, settingsOpen, askOpen]);
 
   function makeTab(connectionId: string | null, database: string, sql = "", title = ""): QueryTab {
     const custom = title.trim();
@@ -1016,6 +1026,7 @@ export default function App() {
           onHover={() => setMenu("Tools")}
           onDismiss={() => setMenu(null)}
           items={[
+            { label: "Ask...", hint: "", icon: <AskIcon />, action: () => setAskOpen(true) },
             { label: "Database Design", hint: "", icon: <DesignIcon />, action: () => openDesign() },
             { label: "sep" },
             { label: "Options...", hint: "", icon: <OptionsIcon />, action: () => setSettingsOpen(true) },
@@ -1053,6 +1064,10 @@ export default function App() {
         </button>
         <button className="tool" title="Format SQL (Shift+Alt+F)" disabled={editorLocked || !activeTab} onClick={() => formatQuery()}>
           <FormatIcon />
+        </button>
+        <button className="tool" title="Ask" onClick={() => setAskOpen(true)}>
+          <AskIcon />
+          <span>Ask</span>
         </button>
         <span className="tool-sep" />
         <select
@@ -1545,6 +1560,22 @@ export default function App() {
           onOpenQuery={(database, sql) => openTab(activeTab?.connectionId ?? connections[0]?.id ?? null, database, sql)}
           onExport={(format, detail: HistoryDetail) => void exportSets(format, detail.resultSets, "history")}
           onClear={() => void clearSavedHistory()}
+        />
+      ) : null}
+      {askOpen ? (
+        <AskDialog
+          target={askTarget}
+          onClose={() => setAskOpen(false)}
+          onAsk={async (question) => {
+            const connection = barConnection ?? connectionsRef.current[0];
+            if (!connection) throw new Error("Connect to a database first.");
+            const database = barDatabase || connection.database;
+            if (!database) throw new Error("Choose a database first.");
+            const columns = await listAllColumns(connection.id, database);
+            const reply = await askSql(engineLabel(connection.engine), database, schemaText(columns).text, question);
+            openTab(connection.id, database, sqlWithNote(reply.sql, reply.note), "Ask");
+            showNotice(reply.note || "Draft SQL is in a new query. Press F5 to run it.");
+          }}
         />
       ) : null}
       {settingsOpen ? (

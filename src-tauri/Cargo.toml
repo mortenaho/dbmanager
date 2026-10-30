@@ -31,6 +31,7 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 rust_decimal = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
+ureq = { version = "2.12", default-features = false, features = ["native-tls", "json"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

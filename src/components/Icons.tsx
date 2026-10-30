@@ -292,6 +292,15 @@ export function DesignIcon({ size = 16 }: IconProps) {
   );
 }
 
+export function AskIcon({ size = 16 }: IconProps) {
+  return (
+    <LineIcon size={size}>
+      <path d="M2.8 3.2 h10.4 v6.6 H8.2 L6 12.2 V9.8 H2.8 z" />
+      <path d="M5.2 5.6 h5.4 M5.2 7.6 h3" />
+    </LineIcon>
+  );
+}
+
 export function OptionsIcon({ size = 16 }: IconProps) {
   return (
     <LineIcon size={size}>

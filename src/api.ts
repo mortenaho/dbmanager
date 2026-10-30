@@ -12,6 +12,7 @@ import type {
   HistoryDetail,
   AppEvent,
   AppSettings,
+  AskReply,
 } from "./types";
 
 export function connectServer(payload: ConnectPayload): Promise<Connection> {
@@ -141,6 +142,15 @@ export function loadSettings(): Promise<AppSettings> {
   return invoke<AppSettings>("load_settings");
 }
 
-export function saveSettings(historyDays: number): Promise<AppSettings> {
-  return invoke<AppSettings>("save_settings", { historyDays });
+export function saveSettings(settings: AppSettings): Promise<AppSettings> {
+  return invoke<AppSettings>("save_settings", {
+    historyDays: settings.historyDays,
+    aiBaseUrl: settings.aiBaseUrl,
+    aiModel: settings.aiModel,
+    aiApiKey: settings.aiApiKey,
+  });
+}
+
+export function askSql(engine: string, database: string, schema: string, question: string): Promise<AskReply> {
+  return invoke<AskReply>("ask_sql", { engine, database, schema, question });
 }

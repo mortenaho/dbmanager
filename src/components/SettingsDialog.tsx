@@ -19,12 +19,20 @@ type Props = {
 
 export function SettingsDialog({ onClose, onSaved }: Props) {
   const [days, setDays] = useState(30);
+  const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
+  const [model, setModel] = useState("gpt-4o-mini");
+  const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     loadSettings()
-      .then((settings) => setDays(settings.historyDays))
+      .then((settings) => {
+        setDays(settings.historyDays);
+        if (settings.aiBaseUrl) setBaseUrl(settings.aiBaseUrl);
+        if (settings.aiModel) setModel(settings.aiModel);
+        setApiKey(settings.aiApiKey);
+      })
       .catch((reason) => setError(errorText(reason)));
   }, []);
 
@@ -32,7 +40,12 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
     setBusy(true);
     setError("");
     try {
-      const saved = await saveSettings(days);
+      const saved = await saveSettings({
+        historyDays: days,
+        aiBaseUrl: baseUrl.trim(),
+        aiModel: model.trim(),
+        aiApiKey: apiKey.trim(),
+      });
       const choice = CHOICES.find((item) => item.days === saved.historyDays);
       onSaved(
         saved.historyDays === 0
@@ -62,7 +75,7 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
 
   return (
     <div className="overlay front" onMouseDown={onClose}>
-      <div className="dialog small" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="dialog" onMouseDown={(event) => event.stopPropagation()}>
         <div className="dialog-title">Options</div>
         <div className="dialog-body">
           <div className="section-label">History</div>
@@ -79,6 +92,22 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
           <p className="settings-hint">
             Queries, cached results, and the application log older than this are removed. Passwords are never stored.
             Never keeps history until you clear it.
+          </p>
+          <div className="section-label">Assistant</div>
+          <div className="field">
+            <label htmlFor="ai-base">Base URL</label>
+            <input id="ai-base" value={baseUrl} spellCheck={false} onChange={(event) => setBaseUrl(event.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="ai-model">Model</label>
+            <input id="ai-model" value={model} spellCheck={false} onChange={(event) => setModel(event.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="ai-key">API key</label>
+            <input id="ai-key" type="password" value={apiKey} spellCheck={false} onChange={(event) => setApiKey(event.target.value)} />
+          </div>
+          <p className="settings-hint">
+            Any OpenAI-compatible service. The key stays in the local settings database and is used only to draft SQL.
           </p>
         </div>
         {error ? <div className="dialog-error">{error}</div> : null}

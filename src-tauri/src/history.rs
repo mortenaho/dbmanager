@@ -15,6 +15,9 @@ pub struct HistoryDb(pub Mutex<Connection>);
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub history_days: u32,
+    pub ai_base_url: String,
+    pub ai_model: String,
+    pub ai_api_key: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -153,31 +156,49 @@ fn migrate(conn: &Connection) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-pub fn load_settings(conn: &Connection) -> Result<AppSettings, String> {
+fn setting_text(conn: &Connection, key: &str) -> Result<String, String> {
     let value: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = 'history_days'",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0))
         .optional()
         .map_err(|e| e.to_string())?;
-    let days = value.and_then(|text| text.parse().ok()).unwrap_or(30);
+    Ok(value.unwrap_or_default())
+}
+
+fn put_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn load_settings(conn: &Connection) -> Result<AppSettings, String> {
+    let days = setting_text(conn, "history_days")?
+        .parse()
+        .ok()
+        .unwrap_or(30);
     Ok(AppSettings {
         history_days: normalize_days(days),
+        ai_base_url: setting_text(conn, "ai_base_url")?,
+        ai_model: setting_text(conn, "ai_model")?,
+        ai_api_key: setting_text(conn, "ai_api_key")?,
     })
 }
 
 pub fn save_settings(conn: &Connection, days: u32) -> Result<AppSettings, String> {
     let days = normalize_days(days);
-    conn.execute(
-        "INSERT INTO settings(key, value) VALUES ('history_days', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![days.to_string()],
-    )
-    .map_err(|e| e.to_string())?;
+    put_setting(conn, "history_days", &days.to_string())?;
     purge(conn, days)?;
-    Ok(AppSettings { history_days: days })
+    load_settings(conn)
+}
+
+pub fn save_assistant(conn: &Connection, base_url: &str, model: &str, api_key: &str) -> Result<AppSettings, String> {
+    put_setting(conn, "ai_base_url", base_url.trim())?;
+    put_setting(conn, "ai_model", model.trim())?;
+    put_setting(conn, "ai_api_key", api_key.trim())?;
+    load_settings(conn)
 }
 
 pub fn normalize_days(days: u32) -> u32 {
@@ -540,6 +561,13 @@ mod tests {
         let saved = save_settings(&conn, 90).unwrap();
         assert_eq!(saved.history_days, 90);
         assert_eq!(load_settings(&conn).unwrap().history_days, 90);
+        let assistant = save_assistant(&conn, "https://example.com/v1", "demo", "secret").unwrap();
+        assert_eq!(assistant.ai_model, "demo");
+        assert_eq!(assistant.ai_api_key, "secret");
+        let kept = save_settings(&conn, 7).unwrap();
+        assert_eq!(kept.history_days, 7);
+        assert_eq!(kept.ai_api_key, "secret");
+        assert_eq!(kept.ai_base_url, "https://example.com/v1");
         assert_eq!(normalize_days(3), 30);
         let _ = std::fs::remove_file(&path);
     }

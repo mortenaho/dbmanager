@@ -1,3 +1,4 @@
+mod ask;
 mod commands;
 mod db;
 mod history;
@@ -43,7 +44,8 @@ pub fn run() {
             commands::list_events,
             commands::log_event,
             commands::load_settings,
-            commands::save_settings
+            commands::save_settings,
+            commands::ask_sql
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
