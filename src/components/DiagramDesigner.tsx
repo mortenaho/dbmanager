@@ -1,3 +1,4 @@
+import Editor, { type OnMount } from "@monaco-editor/react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   addRelationshipBlock,
@@ -15,6 +16,7 @@ import {
   type DesignPoint,
   type RefEnd,
 } from "../sql/dbml";
+import { registerDbmlEditor, setDbmlEngine } from "../sql/dbmlEditor";
 import { errorText, type EngineKind } from "../types";
 import {
   ArrangeIcon,
@@ -67,7 +69,7 @@ export function DiagramDesigner(props: {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
-  const codeRef = useRef<HTMLTextAreaElement>(null);
+  const codeRef = useRef<Parameters<OnMount>[0] | null>(null);
   const drag = useRef<{ key: string; dx: number; dy: number } | null>(null);
 
   useEffect(() => {
@@ -128,37 +130,47 @@ export function DiagramDesigner(props: {
     setNote("Arranged tables by relationship.");
   }
 
+  useEffect(() => {
+    setDbmlEngine(props.engine);
+  }, [props.engine]);
+
+  function placeCursor(offset: number, length: number) {
+    const apply = (tries: number) => {
+      const codeEditor = codeRef.current;
+      const model = codeEditor?.getModel();
+      if (!codeEditor || !model || model.getValueLength() !== length) {
+        if (tries > 0) requestAnimationFrame(() => apply(tries - 1));
+        return;
+      }
+      const position = model.getPositionAt(Math.min(offset, model.getValueLength()));
+      codeEditor.setPosition(position);
+      codeEditor.revealPositionInCenterIfOutsideViewport(position);
+      codeEditor.focus();
+    };
+    requestAnimationFrame(() => apply(8));
+  }
+
   function insertSnippet(text: string) {
-    const area = codeRef.current;
-    const value = props.dbml;
-    const focused = area !== null && document.activeElement === area;
-    const start = focused && area ? area.selectionStart : value.length;
-    const end = focused && area ? area.selectionEnd : value.length;
+    const codeEditor = codeRef.current;
+    const model = codeEditor?.getModel();
+    const value = model?.getValue() ?? props.dbml;
+    const selection = codeEditor?.getSelection();
+    const start = selection && model ? model.getOffsetAt(selection.getStartPosition()) : value.length;
+    const end = selection && model ? model.getOffsetAt(selection.getEndPosition()) : value.length;
     if (!/^\s*(table|ref)\b/i.test(text)) {
       const placedColumn = insertColumnSnippet(value, start, text);
       if (placedColumn) {
         props.onDbml(placedColumn.dbml);
-        const cursor = placedColumn.cursor;
-        requestAnimationFrame(() => {
-          const node = codeRef.current;
-          if (!node) return;
-          node.focus();
-          node.setSelectionRange(cursor, cursor);
-        });
+        placeCursor(placedColumn.cursor, placedColumn.dbml.length);
         return;
       }
     }
     const lead = start > 0 && value[start - 1] !== "\n" ? "\n" : "";
     const body = text.endsWith("\n") ? text : `${text}\n`;
     const chunk = `${lead}${body}`;
-    props.onDbml(value.slice(0, start) + chunk + value.slice(end));
-    const cursor = start + chunk.length;
-    requestAnimationFrame(() => {
-      const node = codeRef.current;
-      if (!node) return;
-      node.focus();
-      node.setSelectionRange(cursor, cursor);
-    });
+    const next = value.slice(0, start) + chunk + value.slice(end);
+    props.onDbml(next);
+    placeCursor(start + chunk.length, next.length);
   }
 
   async function saveDesign() {
@@ -265,15 +277,58 @@ export function DiagramDesigner(props: {
               </button>
             ))}
           </div>
-          <textarea
-            ref={codeRef}
-            className="diagram-code"
-            spellCheck={false}
-            wrap="off"
-            value={props.dbml}
-            onChange={(event) => props.onDbml(event.target.value)}
-            aria-label="Database design"
-          />
+          <div className="diagram-code">
+            <Editor
+              language="dbml"
+              theme="dbml"
+              height="100%"
+              value={props.dbml}
+              beforeMount={registerDbmlEditor}
+              onChange={(value) => props.onDbml(value ?? "")}
+              onMount={(codeEditor) => {
+                codeRef.current = codeEditor;
+                setDbmlEngine(props.engine);
+              }}
+              options={{
+                fontFamily: "Consolas, Liberation Mono, monospace",
+                fontSize: 13,
+                lineHeight: 20,
+                suggestFontSize: 13,
+                suggestLineHeight: 30,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                wordWrap: "off",
+                automaticLayout: true,
+                tabSize: 2,
+                insertSpaces: true,
+                padding: { top: 6, bottom: 6 },
+                lineNumbersMinChars: 3,
+                glyphMargin: false,
+                folding: true,
+                overviewRulerLanes: 0,
+                hideCursorInOverviewRuler: true,
+                scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+                renderLineHighlight: "line",
+                matchBrackets: "always",
+                autoClosingBrackets: "always",
+                autoClosingQuotes: "always",
+                fixedOverflowWidgets: true,
+                snippetSuggestions: "top",
+                wordBasedSuggestions: "off",
+                suggestOnTriggerCharacters: true,
+                acceptSuggestionOnEnter: "on",
+                quickSuggestions: { other: true, comments: false, strings: false },
+                suggest: {
+                  preview: false,
+                  showSnippets: true,
+                  showIcons: true,
+                  filterGraceful: false,
+                  insertMode: "replace",
+                },
+                ariaLabel: "Database design",
+              }}
+            />
+          </div>
         </div>
         <div className="diagram-canvas">
           <div className="diagram-stage" ref={stageRef}>
