@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DB Manager — میز کار SQL Server، PostgreSQL و MySQL</title>
+  <meta name="description" content="DB Manager برنامه دسکتاپ برای اتصال به SQL Server، PostgreSQL و MySQL، نوشتن کوئری، طراحی جدول و دیدن نمودار رابطه‌ها.">
+  <link rel="icon" href="favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <meta property="og:title" content="DB Manager">
+  <meta property="og:description" content="میز کار کوئری برای SQL Server، PostgreSQL و MySQL.">
+  <meta property="og:image" content="logo.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="#top"><img src="logo.png" alt="">DB Manager</a>
+      <nav class="nav">
+        <a href="#features">قابلیت‌ها</a>
+        <a href="#shortcuts">میانبرها</a>
+        <a href="#download">دانلود</a>
+      </nav>
+      <a class="lang" href="en.html">English</a>
+    </div>
+  </header>
+
+  <main id="top">
+    <div class="wrap hero">
+      <div class="hero-grid">
+        <div>
+          <p class="kicker">برنامه دسکتاپ · MoriX</p>
+          <h1>میز کار کوئری برای سه موتور پایگاه داده</h1>
+          <p class="lede">به SQL Server، PostgreSQL یا MySQL وصل می‌شوید، کوئری را می‌نویسید و با F5 اجرا می‌کنید. ساختار پایگاه، طراحی جدول و نمودار رابطه‌ها در همان پنجره است.</p>
+          <div class="actions">
+            <a class="btn primary" href="https://github.com/mortenaho/dbmanager/releases/latest">دانلود آخرین نسخه</a>
+            <a class="btn ghost" href="https://github.com/mortenaho/dbmanager">مخزن گیت‌هاب</a>
+          </div>
+        </div>
+        <div class="window" aria-hidden="true">
+          <div class="window-title">
+            <img src="logo.png" alt="">
+            DB Manager
+            <span class="dots"><i></i><i></i><i></i></span>
+          </div>
+          <div class="menu-fake"><span>File</span><span>Edit</span><span>View</span><span>Query</span><span>Tools</span></div>
+          <div class="tools-fake">
+            <span class="chip">Connect</span>
+            <span class="chip">New Query</span>
+            <span class="chip go">Execute</span>
+            <span class="chip">localhost · orders</span>
+          </div>
+          <div class="workspace-fake">
+            <aside class="tree">
+              <strong>Object Explorer</strong>
+              <div class="on">SQL Server</div>
+              <div>PostgreSQL</div>
+              <div>MySQL</div>
+              <div>Tables</div>
+              <div>Views</div>
+            </aside>
+            <div class="editor-fake">
+              <pre class="sql"><span class="k">SELECT</span> name, city
+<span class="k">FROM</span> customers
+<span class="k">WHERE</span> city = <span class="s">'Shiraz'</span>;</pre>
+              <div class="grid-fake">
+                <table>
+                  <thead><tr><th>name</th><th>city</th></tr></thead>
+                  <tbody>
+                    <tr><td>Neda</td><td>Shiraz</td></tr>
+                    <tr><td>Arman</td><td>Shiraz</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <div class="engines">
+        <article class="engine"><b>SQL Server</b><span>پورت پیش‌فرض <span class="port">1433</span> · رمزنگاری و اعتماد به گواهی</span></article>
+        <article class="engine"><b>PostgreSQL</b><span>پورت پیش‌فرض <span class="port">5432</span> · اتصال SSL</span></article>
+        <article class="engine"><b>MySQL</b><span>پورت پیش‌فرض <span class="port">3306</span> · اتصال SSL</span></article>
+      </div>
+    </div>
+
+    <section id="features">
+      <div class="wrap">
+        <h2>همان کارهایی که داخل برنامه هست</h2>
+        <p class="section-lead">این صفحه معرفی برنامه دسکتاپ است. خود پایگاه داده از مرورگر باز نمی‌شود؛ اتصال روی رایانه شما انجام می‌شود.</p>
+        <div class="features">
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h13"/></svg></div>
+            <h3>ویرایشگر SQL</h3>
+            <p>اجرا، بررسی نحو، قالب‌بندی، پیشنهاد خودکار و قطعهٔ sel و ins و upd و join.</p>
+          </article>
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg></div>
+            <h3>نتایج</h3>
+            <p>انتخاب سلول، کپی با هدر یا بدون هدر، و ذخیره به Excel و JSON.</p>
+          </article>
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M5 8h7M5 16h7M12 8h7M12 16h7"/></svg></div>
+            <h3>Object Explorer</h3>
+            <p>جدول، نما، رویه و تابع. کوئری تازه، هزار ردیف اول، و جزئیات شیء.</p>
+          </article>
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></div>
+            <h3>طراحی جدول</h3>
+            <p>ساخت جدول تازه و ویرایش ستون‌ها، نوع داده و کلید اصلی.</p>
+          </article>
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="7" height="6" rx="1"/><rect x="14" y="14" width="7" height="6" rx="1"/><path d="M10 7h4a3 3 0 0 1 3 3v4"/></svg></div>
+            <h3>نمودار رابطه</h3>
+            <p>چیدمان جدول‌ها بر اساس پیوندها، با نمایش کاردینالیتی رابطه.</p>
+          </article>
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7h11M8 12h11M8 17h11"/><circle cx="4.5" cy="7" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="17" r="1"/></svg></div>
+            <h3>اسکریپت</h3>
+            <p>CREATE، INSERT، CREATE به‌همراه INSERT، اسکریپت اسکیما و پشتیبان پایگاه.</p>
+          </article>
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 8v5l3 2"/></svg></div>
+            <h3>تاریخچه</h3>
+            <p>کوئری‌های قبلی، پیام‌ها و نتیجه، با مدت نگهداری قابل تنظیم.</p>
+          </article>
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v6c0 5-3.5 7.5-8 8-4.5-.5-8-3-8-8V7l8-4z"/></svg></div>
+            <h3>نوشتن بدون WHERE</h3>
+            <p>دستهٔ UPDATE یا DELETE که شرط WHERE ندارد اجرا نمی‌شود.</p>
+          </article>
+          <article class="feature">
+            <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 12a4 4 0 1 0-4-4"/><path d="M4 20c1.5-3 4-4.5 8-4.5s6.5 1.5 8 4.5"/></svg></div>
+            <h3>پروفایل اتصال</h3>
+            <p>ذخیره سرور، ورود سریع به اتصال‌های اخیر، و ساخت پایگاه تازه.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap">
+        <h2>شروع کار</h2>
+        <div class="steps">
+          <article class="step"><span>۱</span><b>وصل شوید</b><p>موتور، میزبان، درگاه و نام کاربری را وارد کنید یا یک پروفایل ذخیره‌شده را باز کنید.</p></article>
+          <article class="step"><span>۲</span><b>کوئری بنویسید</b><p>از Object Explorer یک کوئری تازه باز کنید یا هزار ردیف اول یک جدول را ببینید.</p></article>
+          <article class="step"><span>۳</span><b>اجرا کنید</b><p>F5 نتیجه را در گرید می‌آورد. خروجی را کپی کنید یا به Excel و JSON ذخیره کنید.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="shortcuts">
+      <div class="wrap">
+        <h2>میانبرها</h2>
+        <p class="section-lead">همان میانبرهای داخل برنامه. فهرست کامل با F1 باز می‌شود.</p>
+        <div class="shortcuts">
+          <article class="shortcut-card">
+            <h3>کوئری</h3>
+            <div class="row"><span>اجرا</span><span><kbd>F5</kbd> <kbd>Ctrl+E</kbd></span></div>
+            <div class="row"><span>بررسی نحو</span><span><kbd>Ctrl+F5</kbd></span></div>
+            <div class="row"><span>قالب‌بندی SQL</span><span><kbd>Shift+Alt+F</kbd></span></div>
+            <div class="row"><span>کوئری تازه</span><span><kbd>Ctrl+N</kbd></span></div>
+            <div class="row"><span>بستن کوئری</span><span><kbd>Ctrl+W</kbd></span></div>
+          </article>
+          <article class="shortcut-card">
+            <h3>ویرایشگر و نتایج</h3>
+            <div class="row"><span>پیشنهادها</span><span><kbd>Ctrl+Space</kbd></span></div>
+            <div class="row"><span>جستجو</span><span><kbd>Ctrl+F</kbd></span></div>
+            <div class="row"><span>کپی با هدر</span><span><kbd>Ctrl+C</kbd></span></div>
+            <div class="row"><span>کپی بدون هدر</span><span><kbd>Ctrl+Shift+C</kbd></span></div>
+            <div class="row"><span>بستن پنجره</span><span><kbd>Esc</kbd></span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="download">
+      <div class="wrap">
+        <div class="download">
+          <div>
+            <h2>دانلود</h2>
+            <p>نسخهٔ ۰.۱.۰ برای ویندوز و لینوکس از انتشارهای گیت‌هاب ساخته می‌شود.</p>
+            <ul>
+              <li>ویندوز: نصب‌کننده <b>.exe</b></li>
+              <li>لینوکس: بسته <b>.deb</b> و فایل قابل‌حمل <b>.AppImage</b></li>
+            </ul>
+            <p><a class="btn primary" href="https://github.com/mortenaho/dbmanager/releases/latest">رفتن به انتشارها</a></p>
+          </div>
+          <p class="note">رمز اتصال روی رایانه شما می‌ماند. این وب‌سایت فقط معرفی برنامه است و به پایگاه داده وصل نمی‌شود. تاریخچه کوئری را می‌توانید طوری تنظیم کنید که گذرواژه در آن ذخیره نشود.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <span>DB Manager · MoriX</span>
+      <a href="https://github.com/mortenaho/dbmanager">github.com/mortenaho/dbmanager</a>
+    </div>
+  </footer>
+</body>
+</html>

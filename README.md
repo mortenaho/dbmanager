@@ -1,7 +1,18 @@
-# Tauri + React + Typescript
+# DB Manager
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Desktop workspace for SQL Server, PostgreSQL, and MySQL. Connect, write a query, explore objects, design tables, and view relationship diagrams.
 
-## Recommended IDE Setup
+The project website is published with GitHub Pages from the [`site`](site) folder:
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+**https://mortenaho.github.io/dbmanager/**
+
+## Develop
+
+```bash
+npm install
+npm run tauri dev
+```
+
+## Releases
+
+Windows (`.exe`) and Linux (`.deb`, `.AppImage`) installers are built by [`.github/workflows/release.yml`](.github/workflows/release.yml) and attached to [GitHub releases](https://github.com/mortenaho/dbmanager/releases).
