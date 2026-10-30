@@ -25,7 +25,29 @@ import { DiagramDesigner } from "./components/DiagramDesigner";
 import { TableDesigner } from "./components/TableDesigner";
 import { HelpDialog } from "./components/HelpDialog";
 import { HistoryDialog } from "./components/HistoryDialog";
-import { CheckIcon, FormatIcon, NewQueryIcon, PlayIcon, PlugIcon } from "./components/Icons";
+import {
+  BackupIcon,
+  CheckIcon,
+  CloseAllIcon,
+  CloseIcon,
+  ConnectIcon,
+  DesignIcon,
+  DisconnectIcon,
+  ExcelIcon,
+  ExitIcon,
+  ExplorerIcon,
+  FormatIcon,
+  HistoryIcon,
+  InfoIcon,
+  InsertIcon,
+  JsonIcon,
+  KeyboardIcon,
+  NewQueryIcon,
+  OptionsIcon,
+  PlayIcon,
+  PlugIcon,
+  ScriptIcon,
+} from "./components/Icons";
 import { ObjectExplorer } from "./components/ObjectExplorer";
 import { RenameDialog } from "./components/RenameDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -859,17 +881,19 @@ export default function App() {
           onHover={() => setMenu("File")}
           onDismiss={() => setMenu(null)}
           items={[
-            { label: "New Query", hint: "Ctrl+N", action: () => newQuery() },
-            { label: "Connect...", hint: "", action: () => openConnect() },
+            { label: "New Query", hint: "Ctrl+N", icon: <NewQueryIcon />, action: () => newQuery() },
+            { label: "Connect...", hint: "", icon: <PlugIcon />, action: () => openConnect() },
             ...recent.slice(0, 5).map((profile) => ({
               label: `Connect to ${profile.name}`,
               hint: engineLabel(profile.engine),
+              icon: <ConnectIcon />,
               disabled: connectingId !== null,
               action: () => void quickConnect(profile),
             })),
             {
               label: "Generate Scripts",
               hint: "",
+              icon: <ScriptIcon />,
               disabled: !activeTab?.connectionId || !activeTab.database,
               action: () => {
                 if (activeTab?.connectionId && activeTab.database) {
@@ -880,6 +904,7 @@ export default function App() {
             {
               label: "Backup Database",
               hint: "",
+              icon: <BackupIcon />,
               disabled: !activeTab?.connectionId || !activeTab.database,
               action: () => {
                 if (activeTab?.connectionId && activeTab.database) {
@@ -890,12 +915,14 @@ export default function App() {
             {
               label: "Disconnect",
               hint: "",
+              icon: <DisconnectIcon />,
               disabled: !activeConnection,
               action: () => activeConnection && void disconnect(activeConnection.id),
             },
             {
               label: "Close",
               hint: "Ctrl+W",
+              icon: <CloseIcon />,
               disabled: !activeTab,
               action: () => activeTab && closeTab(activeTab.id),
             },
@@ -903,6 +930,7 @@ export default function App() {
             {
               label: "Exit",
               hint: "",
+              icon: <ExitIcon />,
               action: () => {
                 try {
                   void getCurrentWindow().close();
@@ -924,9 +952,10 @@ export default function App() {
             {
               label: showExplorer ? "Hide Object Explorer" : "Object Explorer",
               hint: "",
+              icon: <ExplorerIcon />,
               action: () => setShowExplorer((value) => !value),
             },
-            { label: "History", hint: "", action: () => setHistoryOpen(true) },
+            { label: "History", hint: "", icon: <HistoryIcon />, action: () => setHistoryOpen(true) },
           ]}
         />
         <Menu
@@ -937,16 +966,18 @@ export default function App() {
           onHover={() => setMenu("Query")}
           onDismiss={() => setMenu(null)}
           items={[
-            { label: "Execute", hint: "F5", disabled: editorLocked || !activeTab || activeTab.running, action: () => void runQuery() },
+            { label: "Execute", hint: "F5", icon: <PlayIcon />, disabled: editorLocked || !activeTab || activeTab.running, action: () => void runQuery() },
             {
               label: "Parse",
               hint: "Ctrl+F5",
+              icon: <CheckIcon />,
               disabled: editorLocked || !activeTab || activeTab.running,
               action: () => void parseQuery(),
             },
             {
               label: "Format SQL",
               hint: "Shift+Alt+F",
+              icon: <FormatIcon />,
               disabled: editorLocked || !activeTab,
               action: () => formatQuery(),
             },
@@ -954,12 +985,14 @@ export default function App() {
             {
               label: "Save Results as Excel",
               hint: "",
+              icon: <ExcelIcon />,
               disabled: !activeTab?.resultSets.some((set) => set.columns.length > 0),
               action: () => void exportResults("xlsx"),
             },
             {
               label: "Save Results as JSON",
               hint: "",
+              icon: <JsonIcon />,
               disabled: !activeTab?.resultSets.some((set) => set.columns.length > 0),
               action: () => void exportResults("json"),
             },
@@ -969,6 +1002,7 @@ export default function App() {
             ).map((snippet) => ({
               label: `Insert ${snippet.detail}`,
               hint: "",
+              icon: <InsertIcon />,
               disabled: editorLocked || !activeTab,
               action: () => insertQuerySnippet(snippet.insertText),
             })),
@@ -982,9 +1016,9 @@ export default function App() {
           onHover={() => setMenu("Tools")}
           onDismiss={() => setMenu(null)}
           items={[
-            { label: "Database Design", hint: "", action: () => openDesign() },
+            { label: "Database Design", hint: "", icon: <DesignIcon />, action: () => openDesign() },
             { label: "sep" },
-            { label: "Options...", hint: "", action: () => setSettingsOpen(true) },
+            { label: "Options...", hint: "", icon: <OptionsIcon />, action: () => setSettingsOpen(true) },
           ]}
         />
         <Menu
@@ -995,9 +1029,9 @@ export default function App() {
           onHover={() => setMenu("Help")}
           onDismiss={() => setMenu(null)}
           items={[
-            { label: "Keyboard Shortcuts", hint: "F1", action: () => setHelpOpen(true) },
+            { label: "Keyboard Shortcuts", hint: "F1", icon: <KeyboardIcon />, action: () => setHelpOpen(true) },
             { label: "sep" },
-            { label: "About DB Manager", hint: "", action: () => setAboutOpen(true) },
+            { label: "About DB Manager", hint: "", icon: <InfoIcon />, action: () => setAboutOpen(true) },
           ]}
         />
       </div>
@@ -1118,22 +1152,28 @@ export default function App() {
                 <div className="blank-actions">
                   {recent[0] ? (
                     <button className="big" disabled={connectingId !== null} onClick={() => void quickConnect(recent[0])}>
-                      {connectingId === recent[0].id ? "Connecting..." : `Connect to ${recent[0].name}`}
+                      <ConnectIcon />
+                      <span>{connectingId === recent[0].id ? "Connecting..." : `Connect to ${recent[0].name}`}</span>
                     </button>
                   ) : (
                     <button className="big" onClick={() => openConnect(null)}>
-                      Connect
+                      <ConnectIcon />
+                      <span>Connect</span>
                     </button>
                   )}
                   {recent.slice(1, 5).map((profile) => (
                     <button key={profile.id} type="button" disabled={connectingId !== null} onClick={() => void quickConnect(profile)}>
-                      <span>{profile.name}</span>
+                      <span className="menu-label">
+                        <ConnectIcon />
+                        <span>{profile.name}</span>
+                      </span>
                       <span className="meta">{engineLabel(profile.engine)}</span>
                     </button>
                   ))}
                   {recent.length > 0 ? (
                     <button className="quiet" type="button" onClick={() => openConnect(null)}>
-                      New connection
+                      <PlugIcon />
+                      <span>New connection</span>
                     </button>
                   ) : null}
                 </div>
@@ -1536,6 +1576,7 @@ export default function App() {
                   setHelpOpen(true);
                 }}
               >
+                <KeyboardIcon />
                 Shortcuts
               </button>
               <span className="spacer" />
@@ -1560,7 +1601,7 @@ export default function App() {
               closeTab(id);
             }}
           >
-            Close
+            <span className="menu-label"><span className="menu-ico"><CloseIcon /></span><span>Close</span></span>
           </button>
           <button
             onClick={() => {
@@ -1568,7 +1609,7 @@ export default function App() {
               closeTabs(null);
             }}
           >
-            Close All
+            <span className="menu-label"><span className="menu-ico"><CloseAllIcon /></span><span>Close All</span></span>
           </button>
           <button
             disabled={tabs.length + (details ? 1 : 0) + (designOpen ? 1 : 0) + tableDesigns.length < 2}
@@ -1578,7 +1619,7 @@ export default function App() {
               closeTabs(id);
             }}
           >
-            Close All But This
+            <span className="menu-label"><span className="menu-ico"><CloseIcon /></span><span>Close All But This</span></span>
           </button>
         </div>
       ) : null}
@@ -1593,7 +1634,7 @@ function Menu(props: {
   onOpen: () => void;
   onHover: () => void;
   onDismiss: () => void;
-  items: Array<{ label: string; hint?: string; disabled?: boolean; action?: () => void }>;
+  items: Array<{ label: string; hint?: string; disabled?: boolean; icon?: React.ReactNode; action?: () => void }>;
 }) {
   return (
     <div className={`menu-item ${props.open ? "open" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
@@ -1619,7 +1660,10 @@ function Menu(props: {
                   item.action?.();
                 }}
               >
-                <span>{item.label}</span>
+                <span className="menu-label">
+                  <span className="menu-ico">{item.icon}</span>
+                  <span>{item.label}</span>
+                </span>
                 <span className="hint">{item.hint}</span>
               </button>
             ),

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { clearHistory, loadSettings, saveSettings } from "../api";
 import { errorText } from "../types";
+import { ClearIcon, SaveIcon } from "./Icons";
 
 const CHOICES = [
   { days: 1, label: "1 day" },
@@ -83,6 +84,7 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
         {error ? <div className="dialog-error">{error}</div> : null}
         <div className="dialog-actions">
           <button type="button" disabled={busy} onClick={() => void clear()}>
+            <ClearIcon />
             Clear history
           </button>
           <span className="spacer" />
@@ -90,6 +92,7 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
             Cancel
           </button>
           <button className="default" type="button" disabled={busy} onClick={() => void save()}>
+            <SaveIcon />
             Save
           </button>
         </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { deleteHistory, getHistory, listEvents, listHistory } from "../api";
 import { engineLabel, errorText, type AppEvent, type EngineKind, type HistoryDetail, type HistoryQuery } from "../types";
+import { ClearIcon, DeleteIcon, LogIcon, NewQueryIcon, OptionsIcon, ResultsIcon } from "./Icons";
 import { ResultsPane } from "./ResultsPane";
 
 type Props = {
@@ -89,12 +90,15 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
         <div className="history-body">
           <div className="history-toolbar">
             <button type="button" className={tab === "queries" ? "active" : ""} onClick={() => setTab("queries")}>
+              <ResultsIcon />
               Queries
             </button>
             <button type="button" className={tab === "log" ? "active" : ""} onClick={() => setTab("log")}>
+              <LogIcon />
               Log
             </button>
             <button type="button" onClick={onOpenSettings}>
+              <OptionsIcon />
               Options
             </button>
             <input
@@ -183,12 +187,15 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
         </div>
         <div className="dialog-actions">
           <button type="button" disabled={!detail} onClick={() => detail && onOpenQuery(detail.databaseName, detail.sql)}>
+            <NewQueryIcon />
             Open in new query
           </button>
           <button type="button" disabled={selectedId == null || tab !== "queries"} onClick={() => void removeSelected()}>
+            <DeleteIcon />
             Delete
           </button>
           <button type="button" onClick={onClear}>
+            <ClearIcon />
             Clear history
           </button>
           <span className="spacer" />

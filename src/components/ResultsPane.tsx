@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { QueryMessage, ResultSet } from "../types";
+import { CopyIcon, CopyPlainIcon, ExcelIcon, JsonIcon, MessagesIcon, ResultsIcon, SelectAllIcon } from "./Icons";
 
 type Props = {
   resultSets: ResultSet[];
@@ -27,19 +28,23 @@ export function ResultsPane({ resultSets, messages, activePane, onPane, onExport
     <div className="results">
       <div className="result-tabs">
         <button className={activePane === "results" ? "active" : ""} onClick={() => onPane("results")}>
+          <ResultsIcon />
           Results
         </button>
         <button
           className={`${activePane === "messages" ? "active" : ""} ${hasError ? "has-error" : ""} ${hasWarn ? "has-warn" : ""}`}
           onClick={() => onPane("messages")}
         >
+          <MessagesIcon />
           Messages
         </button>
         <span className="spacer" />
         <button className="export" type="button" disabled={grids.length === 0} onClick={() => onExport("xlsx")}>
+          <ExcelIcon />
           Excel
         </button>
         <button className="export" type="button" disabled={grids.length === 0} onClick={() => onExport("json")}>
+          <JsonIcon />
           JSON
         </button>
       </div>
@@ -508,14 +513,17 @@ function ResultGrid({ set, index, total }: { set: ResultSet; index: number; tota
       {menu ? (
         <div className="context-menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(event) => event.stopPropagation()}>
           <button type="button" disabled={!selection} onClick={() => void copySelection(true)}>
-            Copy with Headers <span className="hint">Ctrl+C</span>
+            <span className="menu-label"><span className="menu-ico"><CopyIcon /></span><span>Copy with Headers</span></span>
+            <span className="hint">Ctrl+C</span>
           </button>
           <button type="button" disabled={!selection} onClick={() => void copySelection(false)}>
-            Copy without Headers <span className="hint">Ctrl+Shift+C</span>
+            <span className="menu-label"><span className="menu-ico"><CopyPlainIcon /></span><span>Copy without Headers</span></span>
+            <span className="hint">Ctrl+Shift+C</span>
           </button>
           <div className="menu-sep" />
           <button type="button" onClick={() => { setMenu(null); selectAll(); }}>
-            Select All <span className="hint">Ctrl+A</span>
+            <span className="menu-label"><span className="menu-ico"><SelectAllIcon /></span><span>Select All</span></span>
+            <span className="hint">Ctrl+A</span>
           </button>
         </div>
       ) : null}

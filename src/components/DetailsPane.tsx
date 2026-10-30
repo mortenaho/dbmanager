@@ -1,6 +1,6 @@
 import { useMemo, useState, type MouseEvent } from "react";
 import { engineLabel, type Connection, type DbObject } from "../types";
-import { FunctionIcon, ProcedureIcon, TableIcon, ViewIcon } from "./Icons";
+import { FunctionIcon, ProcedureIcon, RefreshIcon, SortAscIcon, SortDescIcon, TableIcon, ViewIcon } from "./Icons";
 
 type Folder = "table" | "view" | "procedure" | "function";
 type ColumnId = "name" | "schema" | "created" | "rowCount";
@@ -139,7 +139,7 @@ export function DetailsPane(props: {
               setMenu(null);
             }}
           >
-            Sort Ascending
+            <span className="menu-label"><span className="menu-ico"><SortAscIcon /></span><span>Sort Ascending</span></span>
           </button>
           <button
             onClick={() => {
@@ -147,7 +147,7 @@ export function DetailsPane(props: {
               setMenu(null);
             }}
           >
-            Sort Descending
+            <span className="menu-label"><span className="menu-ico"><SortDescIcon /></span><span>Sort Descending</span></span>
           </button>
           <div className="menu-sep" />
           {COLUMNS.map((column) => (
@@ -165,7 +165,7 @@ export function DetailsPane(props: {
               setMenu(null);
             }}
           >
-            Reset View
+            <span className="menu-label"><span className="menu-ico"><RefreshIcon /></span><span>Reset View</span></span>
           </button>
         </div>
       ) : null}

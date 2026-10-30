@@ -11,13 +11,23 @@ import {
   type EngineKind,
 } from "../types";
 import {
+  BackupIcon,
   ColumnIcon,
   DatabaseIcon,
+  DesignIcon,
+  DisconnectIcon,
   FolderIcon,
   FunctionIcon,
+  InsertIcon,
+  NewQueryIcon,
+  NewTableIcon,
   PlugIcon,
   ProcedureIcon,
   RefreshIcon,
+  RenameIcon,
+  ScriptBothIcon,
+  ScriptIcon,
+  SelectRowsIcon,
   ServerIcon,
   TableIcon,
   ViewIcon,
@@ -57,7 +67,7 @@ type Props = {
 type MenuState = {
   x: number;
   y: number;
-  items: Array<{ label: string; action: () => void }>;
+  items: Array<{ label: string; icon: ReactNode; action: () => void }>;
 };
 
 export function ObjectExplorer({
@@ -287,19 +297,19 @@ export function ObjectExplorer({
     if (item.kind.type === "server") {
       const connection = item.kind.connection;
       openMenu(event, [
-        { label: "New Query", action: () => onNewQuery(connection.id, connection.database) },
-        { label: "Refresh", action: () => refreshConnection(connection.id) },
-        { label: "Disconnect", action: () => onDisconnect(connection.id) },
+        { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, connection.database) },
+        { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
+        { label: "Disconnect", icon: <DisconnectIcon />, action: () => onDisconnect(connection.id) },
       ]);
     } else if (item.kind.type === "database") {
       const { connection, database } = item.kind;
       openMenu(event, [
-        { label: "New Query", action: () => onNewQuery(connection.id, database) },
-        { label: "New Table", action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), "") },
-        { label: "Generate Scripts", action: () => onGenerateScript(connection.id, database, null, "schema") },
-        { label: "Backup Database", action: () => onGenerateScript(connection.id, database, null, "backup") },
-        { label: "Rename", action: () => onRenameDatabase(connection.id, database) },
-        { label: "Refresh", action: () => refreshConnection(connection.id) },
+        { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
+        { label: "New Table", icon: <NewTableIcon />, action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), "") },
+        { label: "Generate Scripts", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, null, "schema") },
+        { label: "Backup Database", icon: <BackupIcon />, action: () => onGenerateScript(connection.id, database, null, "backup") },
+        { label: "Rename", icon: <RenameIcon />, action: () => onRenameDatabase(connection.id, database) },
+        { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
       ]);
     } else if (item.kind.type === "object") {
       const { connection, database, object, folder } = item.kind;
@@ -309,13 +319,14 @@ export function ObjectExplorer({
         event,
         routine
           ? [
-              { label: "Script as CREATE", action: () => onScriptRoutine(connection.id, database, object) },
-              { label: "New Query", action: () => onNewQuery(connection.id, database) },
+              { label: "Script as CREATE", icon: <ScriptIcon />, action: () => onScriptRoutine(connection.id, database, object) },
+              { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
             ]
           : folder === "view"
             ? [
                 {
                   label: topLabel,
+                  icon: <SelectRowsIcon />,
                   action: () =>
                     onSelectTop(
                       connection.id,
@@ -324,14 +335,15 @@ export function ObjectExplorer({
                       objectTabTitle(connection.engine, object.schema, object.name),
                     ),
                 },
-                { label: "Script as CREATE", action: () => onGenerateScript(connection.id, database, object, "create") },
-                { label: "Rename", action: () => onRenameTable(connection.id, database, object.schema, object.name) },
-                { label: "New Query", action: () => onNewQuery(connection.id, database) },
+                { label: "Script as CREATE", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, object, "create") },
+                { label: "Rename", icon: <RenameIcon />, action: () => onRenameTable(connection.id, database, object.schema, object.name) },
+                { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
               ]
             : [
-                { label: "Design", action: () => onDesignTable(connection.id, database, object.schema, object.name) },
+                { label: "Design", icon: <DesignIcon />, action: () => onDesignTable(connection.id, database, object.schema, object.name) },
                 {
                   label: topLabel,
+                  icon: <SelectRowsIcon />,
                   action: () =>
                     onSelectTop(
                       connection.id,
@@ -340,14 +352,15 @@ export function ObjectExplorer({
                       objectTabTitle(connection.engine, object.schema, object.name),
                     ),
                 },
-                { label: "Script as CREATE", action: () => onGenerateScript(connection.id, database, object, "create") },
-                { label: "Script as INSERT", action: () => onGenerateScript(connection.id, database, object, "insert") },
+                { label: "Script as CREATE", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, object, "create") },
+                { label: "Script as INSERT", icon: <InsertIcon />, action: () => onGenerateScript(connection.id, database, object, "insert") },
                 {
                   label: "Script as CREATE and INSERT",
+                  icon: <ScriptBothIcon />,
                   action: () => onGenerateScript(connection.id, database, object, "both"),
                 },
-                { label: "Rename", action: () => onRenameTable(connection.id, database, object.schema, object.name) },
-                { label: "New Query", action: () => onNewQuery(connection.id, database) },
+                { label: "Rename", icon: <RenameIcon />, action: () => onRenameTable(connection.id, database, object.schema, object.name) },
+                { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
               ],
       );
     } else if (item.kind.type === "folder" && item.kind.folder === "table") {
@@ -355,9 +368,10 @@ export function ObjectExplorer({
       openMenu(event, [
         {
           label: "New Table",
+          icon: <NewTableIcon />,
           action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), ""),
         },
-        { label: "Refresh", action: () => refreshConnection(connection.id) },
+        { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
       ]);
     }
   }
@@ -455,7 +469,10 @@ export function ObjectExplorer({
                 item.action();
               }}
             >
-              {item.label}
+              <span className="menu-label">
+                <span className="menu-ico">{item.icon}</span>
+                <span>{item.label}</span>
+              </span>
             </button>
           ))}
         </div>

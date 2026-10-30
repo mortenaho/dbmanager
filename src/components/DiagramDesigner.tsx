@@ -16,6 +16,32 @@ import {
   type RefEnd,
 } from "../sql/dbml";
 import { errorText, type EngineKind } from "../types";
+import {
+  ArrangeIcon,
+  HistoryIcon,
+  ImplementIcon,
+  LinkIcon,
+  ManyToManyIcon,
+  OneToManyIcon,
+  OneToOneIcon,
+  OpenIcon,
+  PrimaryKeyIcon,
+  SaveIcon,
+  TableIcon,
+  UniqueIcon,
+} from "./Icons";
+
+function SnippetIcon({ id }: { id: string }) {
+  if (id === "table") return <TableIcon size={14} />;
+  if (id === "pk") return <PrimaryKeyIcon size={14} />;
+  if (id === "fk") return <LinkIcon size={14} />;
+  if (id === "ref") return <OneToManyIcon size={14} />;
+  if (id === "unique") return <UniqueIcon size={14} />;
+  if (id === "timestamps") return <HistoryIcon size={14} />;
+  if (id === "ref-one") return <OneToOneIcon size={14} />;
+  if (id === "ref-many") return <ManyToManyIcon size={14} />;
+  return <OneToManyIcon size={14} />;
+}
 
 const CARD_W = 240;
 const HEAD = 28;
@@ -181,12 +207,15 @@ export function DiagramDesigner(props: {
         </span>
         <span className="spacer" />
         <button type="button" className="diagram-tool" disabled={busy} onClick={() => void saveDesign()}>
+          <SaveIcon />
           Save
         </button>
         <button type="button" className="diagram-tool" disabled={busy} onClick={() => void openDesign()}>
+          <OpenIcon />
           Open
         </button>
         <button type="button" className="diagram-tool" disabled={busy || model.tables.length === 0} onClick={arrange}>
+          <ArrangeIcon />
           Arrange
         </button>
         <label>
@@ -198,6 +227,7 @@ export function DiagramDesigner(props: {
           </select>
         </label>
         <button type="button" className="diagram-go" disabled={model.tables.length === 0 || sql.trim() === ""} onClick={() => props.onImplement(sql)}>
+          <ImplementIcon />
           Implement
         </button>
       </div>
@@ -205,18 +235,23 @@ export function DiagramDesigner(props: {
         <aside className="diagram-elements">
           <div className="diagram-side-title">Elements</div>
           <button type="button" onClick={() => props.onDbml(addTableBlock(props.dbml))}>
+            <TableIcon size={14} />
             Table
           </button>
           <button type="button" onClick={() => props.onDbml(addRelationshipBlock(props.dbml))}>
+            <OneToManyIcon />
             One to many
           </button>
           <button type="button" onClick={() => props.onDbml(addRelationshipLine(props.dbml, "-"))}>
+            <OneToOneIcon />
             One to one
           </button>
           <button type="button" onClick={() => props.onDbml(addRelationshipLine(props.dbml, "<>"))}>
+            <ManyToManyIcon />
             Many to many
           </button>
           <button type="button" disabled={model.tables.length === 0} onClick={arrange}>
+            <ArrangeIcon />
             Arrange
           </button>
         </aside>
@@ -225,6 +260,7 @@ export function DiagramDesigner(props: {
             <span>Snippets</span>
             {DBML_SNIPPETS.map((snippet) => (
               <button key={snippet.id} type="button" title={snippet.title} onClick={() => insertSnippet(snippet.text)}>
+                <SnippetIcon id={snippet.id} />
                 {snippet.label}
               </button>
             ))}

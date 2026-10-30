@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { deleteProfile, loadProfiles, saveProfile } from "../api";
 import { defaultPort, engineLabel, errorText, type ConnectPayload, type EngineKind, type Profile } from "../types";
+import { ConnectIcon, DeleteIcon } from "./Icons";
 
 type Props = {
   selectedId?: string | null;
@@ -159,6 +160,7 @@ export function ConnectDialog({ selectedId, initialError = "", onCancel, onConne
                 ))}
               </select>
               <button type="button" disabled={!profileId} onClick={() => void removeProfile()}>
+                <DeleteIcon />
                 Delete
               </button>
             </div>
@@ -287,6 +289,7 @@ export function ConnectDialog({ selectedId, initialError = "", onCancel, onConne
         {error ? <div className="dialog-error">{error}</div> : null}
         <div className="dialog-actions">
           <button className="default" type="submit" disabled={busy}>
+            <ConnectIcon />
             {busy ? "Connecting..." : "Connect"}
           </button>
           <button type="button" onClick={onCancel} disabled={busy}>
