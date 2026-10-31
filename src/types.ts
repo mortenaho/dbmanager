@@ -105,6 +105,8 @@ export type HistoryBackup = {
   tableName: string;
   rowCount: number;
   rolledBack: boolean;
+  columns: string[];
+  rows: Array<Array<string | null>>;
 };
 
 export type HistoryDetail = HistoryQuery & {

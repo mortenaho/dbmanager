@@ -51,7 +51,9 @@ import {
   OptionsIcon,
   PlayIcon,
   PlugIcon,
+  MoonIcon,
   ScriptIcon,
+  SunIcon,
 } from "./components/Icons";
 import { ObjectExplorer } from "./components/ObjectExplorer";
 import { RenameDialog } from "./components/RenameDialog";
@@ -64,10 +66,12 @@ import {
   executionSql,
   formatSql,
   insertSnippet,
+  defineSqlThemes,
   registerSqlEditor,
   setSqlCatalog,
   SQL_SNIPPETS,
 } from "./sql/editor";
+import { applyTheme, sqlEditorTheme, storedTheme, type ColorScheme } from "./theme";
 import { SAMPLE_DBML } from "./sql/dbml";
 import {
   engineLabel,
@@ -113,6 +117,7 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [theme, setTheme] = useState<ColorScheme>(() => storedTheme());
   const [askOpen, setAskOpen] = useState(false);
   const [aiWidth, setAiWidth] = useState(360);
   const [historyVersion, setHistoryVersion] = useState(0);
@@ -881,24 +886,16 @@ export default function App() {
 
   const beforeMount: BeforeMount = (monaco) => {
     registerSqlEditor(monaco);
-    monaco.editor.defineTheme("ssms", {
-      base: "vs",
-      inherit: true,
-      rules: [
-        { token: "keyword", foreground: "0000FF" },
-        { token: "string", foreground: "A31515" },
-        { token: "comment", foreground: "008000" },
-        { token: "number", foreground: "098658" },
-      ],
-      colors: {
-        "editor.background": "#FFFFFF",
-        "editor.foreground": "#000000",
-        "editorLineNumber.foreground": "#2B91AF",
-        "editor.selectionBackground": "#ADD6FF",
-        "editorCursor.foreground": "#000000",
-      },
-    });
+    defineSqlThemes(monaco);
   };
+
+  function toggleTheme() {
+    setTheme((current) => {
+      const next = current === "dark" ? "light" : "dark";
+      applyTheme(next);
+      return next;
+    });
+  }
 
   const rowCount = activeTab?.resultSets.reduce((sum, set) => sum + set.rows.length, 0) ?? 0;
   const editorLocked = detailsActive || designActive || tableDesignId !== null;
@@ -996,6 +993,12 @@ export default function App() {
               action: () => setShowExplorer((value) => !value),
             },
             { label: "History", hint: "", icon: <HistoryIcon />, action: () => setHistoryOpen(true) },
+            {
+              label: "Dark mode",
+              hint: theme === "dark" ? "On" : "Off",
+              icon: theme === "dark" ? <SunIcon /> : <MoonIcon />,
+              action: () => toggleTheme(),
+            },
           ]}
         />
         <Menu
@@ -1151,6 +1154,14 @@ export default function App() {
           ) : null}
         </select>
         <span className="spacer" />
+        <button
+          className="tool"
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          aria-pressed={theme === "dark"}
+          onClick={toggleTheme}
+        >
+          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+        </button>
         <span className="server-chip">
           {barConnection
             ? `${barConnection.username}@${barConnection.host},${barConnection.port}`
@@ -1432,6 +1443,7 @@ export default function App() {
                 <DiagramDesigner
                   dbml={designDbml}
                   engine={designEngine}
+                  theme={theme}
                   onDbml={setDesignDbml}
                   onEngine={setDesignEngine}
                   onSaveFile={(fileName, contents) =>
@@ -1467,7 +1479,7 @@ export default function App() {
                   <div key={tab.id} className={`editor-layer ${tab.id === activeTabId && !editorLocked ? "" : "hidden"}`}>
                     <Editor
                       language="sql"
-                      theme="ssms"
+                      theme={sqlEditorTheme(theme)}
                       value={tab.sql}
                       beforeMount={beforeMount}
                       onChange={(value) => patchTab(tab.id, { sql: value ?? "" })}

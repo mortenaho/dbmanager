@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { engineLabel, type Connection, type DbObject } from "../types";
 import { FunctionIcon, ProcedureIcon, RefreshIcon, SortAscIcon, SortDescIcon, TableIcon, ViewIcon } from "./Icons";
 
@@ -32,15 +32,22 @@ export function DetailsPane(props: {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [selected, setSelected] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number; column: ColumnId } | null>(null);
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+
+  useEffect(() => {
+    setQuery("");
+    setSelected("");
+  }, [props.target.connection.id, props.target.database, props.target.folder]);
 
   const rows = useMemo(() => {
-    const items = [...props.target.objects];
+    const items = props.target.objects.filter((object) => matchesQuery(object, needle));
     items.sort((left, right) => {
       const delta = sortKey ? compareColumn(left, right, sortKey) : compareNatural(left, right);
       return sortDir === "asc" ? delta : -delta;
     });
     return items;
-  }, [props.target.objects, sortDir, sortKey]);
+  }, [needle, props.target.objects, sortDir, sortKey]);
 
   const shown = COLUMNS.filter((column) => visible.includes(column.id));
 
@@ -81,6 +88,19 @@ export function DetailsPane(props: {
       <div className="details-path" title={path}>
         {path}
       </div>
+      <div className="details-search">
+        <input
+          value={query}
+          placeholder="Search by name or schema"
+          title="Filter this list by name or schema"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        {query ? (
+          <button type="button" title="Clear search" onClick={() => setQuery("")}>
+            Clear
+          </button>
+        ) : null}
+      </div>
       <div className="details-grid">
         <div className="details-head">
           {shown.map((column) => (
@@ -96,6 +116,9 @@ export function DetailsPane(props: {
             </button>
           ))}
         </div>
+        {rows.length === 0 ? (
+          <div className="details-empty">{needle ? "No matching objects." : "This folder is empty."}</div>
+        ) : null}
         {rows.map((object) => {
           const key = `${object.schema}.${object.name}`;
           return (
@@ -123,7 +146,9 @@ export function DetailsPane(props: {
       <div className="details-foot">
         <span>{props.target.title}</span>
         <span>
-          {rows.length} {rows.length === 1 ? "Item" : "Items"}
+          {needle
+            ? `${rows.length} of ${props.target.objects.length} ${props.target.objects.length === 1 ? "Item" : "Items"}`
+            : `${rows.length} ${rows.length === 1 ? "Item" : "Items"}`}
         </span>
       </div>
       {menu ? (
@@ -201,6 +226,13 @@ function cellText(object: DbObject, column: ColumnId): string {
   if (column === "created") return formatCreated(object.created ?? "");
   if (object.rowCount == null) return "";
   return object.rowCount.toLocaleString("en-US");
+}
+
+function matchesQuery(object: DbObject, needle: string): boolean {
+  if (!needle) return true;
+  const name = object.name.toLowerCase();
+  const schema = object.schema.toLowerCase();
+  return name.includes(needle) || schema.includes(needle) || `${schema}.${name}`.includes(needle);
 }
 
 function compareNatural(left: DbObject, right: DbObject): number {

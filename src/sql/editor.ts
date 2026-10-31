@@ -153,3 +153,40 @@ function toCompletion(
     filterText: suggestion.filterText,
   };
 }
+
+export function defineSqlThemes(monaco: Monaco) {
+  monaco.editor.defineTheme("ssms", {
+    base: "vs",
+    inherit: true,
+    rules: [
+      { token: "keyword", foreground: "0000FF" },
+      { token: "string", foreground: "A31515" },
+      { token: "comment", foreground: "008000" },
+      { token: "number", foreground: "098658" },
+    ],
+    colors: {
+      "editor.background": "#FFFFFF",
+      "editor.foreground": "#000000",
+      "editorLineNumber.foreground": "#2B91AF",
+      "editor.selectionBackground": "#ADD6FF",
+      "editorCursor.foreground": "#000000",
+    },
+  });
+  monaco.editor.defineTheme("ssms-dark", {
+    base: "vs-dark",
+    inherit: true,
+    rules: [
+      { token: "keyword", foreground: "569CD6" },
+      { token: "string", foreground: "CE9178" },
+      { token: "comment", foreground: "6A9955" },
+      { token: "number", foreground: "B5CEA8" },
+    ],
+    colors: {
+      "editor.background": "#1E1E1E",
+      "editor.foreground": "#D4D4D4",
+      "editorLineNumber.foreground": "#858585",
+      "editor.selectionBackground": "#264F78",
+      "editorCursor.foreground": "#AEAFAD",
+    },
+  });
+}

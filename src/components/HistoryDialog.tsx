@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { deleteHistory, getHistory, listEvents, listHistory } from "../api";
-import { engineLabel, errorText, type AppEvent, type EngineKind, type HistoryDetail, type HistoryQuery } from "../types";
+import {
+  engineLabel,
+  errorText,
+  type AppEvent,
+  type EngineKind,
+  type HistoryDetail,
+  type HistoryQuery,
+  type ResultSet,
+} from "../types";
 import { ClearIcon, DeleteIcon, LogIcon, NewQueryIcon, OptionsIcon, ResultsIcon } from "./Icons";
 import { ResultsPane } from "./ResultsPane";
 
@@ -24,6 +32,7 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
   const [error, setError] = useState("");
   const [pane, setPane] = useState<"results" | "messages">("results");
   const [rolling, setRolling] = useState(false);
+  const [view, setView] = useState<"results" | "changes">("results");
 
   useEffect(() => {
     let cancel = false;
@@ -120,7 +129,7 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
             </button>
             <input
               value={filter}
-              placeholder="Filter"
+              placeholder="Search SQL, database, or server"
               aria-label="Filter history"
               onChange={(event) => setFilter(event.target.value)}
             />
@@ -156,8 +165,8 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
                   <thead>
                     <tr>
                       <th>Time</th>
-                      <th>Server</th>
                       <th>Database</th>
+                      <th>Status</th>
                       <th>Rows</th>
                       <th>Backup</th>
                       <th>SQL</th>
@@ -168,16 +177,41 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
                       <tr
                         key={item.id}
                         className={`${item.id === selectedId ? "selected" : ""} ${item.status === "error" || item.status === "blocked" ? "bad" : ""}`}
-                        onClick={() => setSelectedId(item.id)}
+                        onClick={() => {
+                          setSelectedId(item.id);
+                          if (item.backupRows <= 0) setView("results");
+                        }}
                       >
-                        <td>{formatWhen(item.createdAt)}</td>
+                        <td className="history-when">{formatWhen(item.createdAt)}</td>
                         <td>
-                          {engineLabel(item.engine as EngineKind)} {item.server}
+                          <div>{item.databaseName || "—"}</div>
+                          <div className="history-sub">
+                            {engineLabel(item.engine as EngineKind)} {item.server}
+                          </div>
                         </td>
-                        <td>{item.databaseName}</td>
+                        <td>{statusBadge(item.status)}</td>
                         <td>{item.rowCount.toLocaleString()}</td>
-                        <td>{item.rollbackCount > 0 ? "Yes" : item.backupRows > 0 ? "Done" : ""}</td>
-                        <td>{preview(item.sql)}</td>
+                        <td>
+                          <div className="history-backup-cell">
+                            {backupBadge(item)}
+                            {item.backupRows > 0 ? (
+                              <button
+                                type="button"
+                                className={`history-mini${item.id === selectedId && view === "changes" ? " active" : ""}`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedId(item.id);
+                                  setView("changes");
+                                }}
+                              >
+                                Details
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="history-sql-cell" title={item.sql}>
+                          {preview(item.sql)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -186,27 +220,81 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
               <div className="history-detail">
                 {detail ? (
                   <>
-                    <pre className="history-sql">{detail.sql}</pre>
-                    {detail.backups.length > 0 ? (
-                      <div className={canRollback ? "history-backup" : "history-backup done"}>
-                        <span>{backupText(detail)}</span>
-                        <button type="button" disabled={!canRollback || rolling} onClick={() => void rollback()}>
-                          {rolling ? "Rolling back..." : canRollback ? "Roll back" : "Rolled back"}
-                        </button>
+                    <div className="history-detail-head">
+                      <div className="history-detail-meta">
+                        {statusBadge(detail.status)}
+                        <span>{formatWhen(detail.createdAt)}</span>
+                        <span>{detail.databaseName || "No database"}</span>
+                        <span>{detail.rowCount.toLocaleString()} affected</span>
+                        <span>{detail.elapsedMs.toLocaleString()} ms</span>
                       </div>
-                    ) : null}
+                      <pre className="history-sql">{detail.sql}</pre>
+                      <div className="history-switch">
+                        <button type="button" className={view === "results" ? "active" : ""} onClick={() => setView("results")}>
+                          Results
+                        </button>
+                        <button
+                          type="button"
+                          className={view === "changes" ? "active" : ""}
+                          disabled={detail.backups.length === 0}
+                          onClick={() => setView("changes")}
+                        >
+                          Changed rows
+                          {detail.backups.length > 0 ? ` (${changedCount(detail).toLocaleString()})` : ""}
+                        </button>
+                        {detail.backups.length > 0 ? (
+                          <button type="button" className="history-rollback" disabled={!canRollback || rolling} onClick={() => void rollback()}>
+                            {rolling ? "Rolling back..." : canRollback ? "Roll back" : "Rolled back"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
                     <div className="history-results">
-                      <ResultsPane
-                        resultSets={detail.resultSets}
-                        messages={detail.messages}
-                        activePane={pane}
-                        onPane={setPane}
-                        onExport={(format) => onExport(format, detail)}
-                      />
+                      {view === "changes" ? (
+                        detail.backups.length === 0 ? (
+                          <div className="empty-results">This query has no saved rows. Only UPDATE and DELETE keep a before-image.</div>
+                        ) : (
+                          <div className="history-changes">
+                            <div className="history-change-cards">
+                              {detail.backups.map((backup, index) => (
+                                <div key={index} className={`history-change-card ${backup.kind === "delete" ? "delete" : "update"}`}>
+                                  <span className={backup.kind === "delete" ? "history-badge error" : "history-badge blocked"}>
+                                    {backup.kind === "delete" ? "Deleted" : "Updated"}
+                                  </span>
+                                  <strong>{backup.tableName}</strong>
+                                  <span>{backup.rowCount === 1 ? "1 row" : `${backup.rowCount.toLocaleString()} rows`}</span>
+                                  <span className={backup.rolledBack ? "history-badge done" : "history-badge"}>
+                                    {backup.rolledBack ? "Rolled back" : "Before image"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            <p className="history-change-note">
+                              Deleted cards are the rows that were removed. Updated cards are the values from before the statement ran.
+                            </p>
+                            <ResultsPane
+                              resultSets={changeSets(detail)}
+                              captions={changeCaptions(detail)}
+                              messages={[]}
+                              activePane="results"
+                              onPane={() => undefined}
+                              onExport={(format) => onExport(format, { ...detail, resultSets: changeSets(detail) })}
+                            />
+                          </div>
+                        )
+                      ) : (
+                        <ResultsPane
+                          resultSets={detail.resultSets}
+                          messages={detail.messages}
+                          activePane={pane}
+                          onPane={setPane}
+                          onExport={(format) => onExport(format, detail)}
+                        />
+                      )}
                     </div>
                   </>
                 ) : (
-                  <div className="empty-results">Select a query to see its SQL and cached results.</div>
+                  <div className="empty-results">Select a query to see its SQL, results, and any saved rows.</div>
                 )}
               </div>
             </>
@@ -235,14 +323,38 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
   );
 }
 
-function backupText(detail: HistoryDetail): string {
-  return detail.backups
-    .map((backup) => {
-      const kind = backup.kind === "delete" ? "DELETE" : "UPDATE";
-      const state = backup.rolledBack ? "rolled back" : "ready";
-      return `${kind} ${backup.tableName} (${backup.rowCount.toLocaleString()} rows, ${state})`;
-    })
-    .join("; ");
+function changeSets(detail: HistoryDetail): ResultSet[] {
+  return detail.backups.map((backup) => ({
+    columns: backup.columns,
+    rows: backup.rows,
+    rowsAffected: backup.rows.length,
+    truncated: false,
+  }));
+}
+
+function changeCaptions(detail: HistoryDetail): string[] {
+  return detail.backups.map((backup) => {
+    const action = backup.kind === "delete" ? "Deleted from" : "Updated in";
+    const rows = backup.rowCount === 1 ? "1 row" : `${backup.rowCount.toLocaleString()} rows`;
+    const state = backup.rolledBack ? ", already rolled back" : "";
+    return `${action} ${backup.tableName} — ${rows}${state}`;
+  });
+}
+
+function statusBadge(status: string) {
+  if (status === "error") return <span className="history-badge error">Error</span>;
+  if (status === "blocked") return <span className="history-badge blocked">Blocked</span>;
+  return <span className="history-badge ok">OK</span>;
+}
+
+function backupBadge(item: HistoryQuery) {
+  if (item.backupRows <= 0) return <span className="history-muted">—</span>;
+  if (item.rollbackCount > 0) return <span className="history-badge">Backed up</span>;
+  return <span className="history-badge done">Rolled back</span>;
+}
+
+function changedCount(detail: HistoryDetail): number {
+  return detail.backups.reduce((sum, backup) => sum + backup.rowCount, 0);
 }
 
 function formatWhen(value: string): string {

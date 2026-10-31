@@ -70,7 +70,7 @@ export function FunctionIcon({ size = 16 }: IconProps) {
 export function FormatIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M3 3 h10 M3 6.5 h7 M3 10 h10 M3 13.5 h5" fill="none" stroke="#333" strokeWidth="1.4" />
+      <path d="M3 3 h10 M3 6.5 h7 M3 10 h10 M3 13.5 h5" fill="none" stroke="currentColor" strokeWidth="1.4" />
     </svg>
   );
 }
@@ -121,8 +121,8 @@ export function PlugIcon() {
 export function RefreshIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M13 8 a5 5 0 1 1-1.5-3.5" fill="none" stroke="#333" strokeWidth="1.4" />
-      <path d="M13 2.5 v3.2 h-3.2" fill="none" stroke="#333" strokeWidth="1.4" />
+      <path d="M13 8 a5 5 0 1 1-1.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M13 2.5 v3.2 h-3.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
     </svg>
   );
 }
@@ -549,6 +549,23 @@ export function LogIcon({ size = 16 }: IconProps) {
     <LineIcon size={size}>
       <path d="M3.2 2.4 h7.2 L12.8 4.8 V13.6 H3.2 z" />
       <path d="M5.2 6.4 h6 M5.2 8.8 h6 M5.2 11.2 h4" />
+    </LineIcon>
+  );
+}
+
+export function MoonIcon({ size = 16 }: IconProps) {
+  return (
+    <LineIcon size={size}>
+      <path d="M8.8 2.1a4.8 4.8 0 1 0 4.6 6.5A3.9 3.9 0 0 1 8.8 2.1z" />
+    </LineIcon>
+  );
+}
+
+export function SunIcon({ size = 16 }: IconProps) {
+  return (
+    <LineIcon size={size}>
+      <circle cx="8" cy="8" r="2.4" />
+      <path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.15 1.15M11.25 11.25l1.15 1.15M12.4 3.6l-1.15 1.15M4.75 11.25l-1.15 1.15" />
     </LineIcon>
   );
 }

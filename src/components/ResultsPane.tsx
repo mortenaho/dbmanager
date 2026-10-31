@@ -8,6 +8,7 @@ type Props = {
   activePane: "results" | "messages";
   onPane: (pane: "results" | "messages") => void;
   onExport: (format: "xlsx" | "json") => void;
+  captions?: string[];
 };
 
 type CellPos = { row: number; col: number };
@@ -19,7 +20,7 @@ type DragKind = "cells" | "rows" | "columns";
 
 const ROW_HEIGHT = 22;
 
-export function ResultsPane({ resultSets, messages, activePane, onPane, onExport }: Props) {
+export function ResultsPane({ resultSets, messages, activePane, onPane, onExport, captions }: Props) {
   const grids = resultSets.filter((set) => set.columns.length > 0);
   const writes = resultSets.filter((set) => set.columns.length === 0);
   const hasError = messages.some((message) => message.level === "error");
@@ -79,7 +80,13 @@ export function ResultsPane({ resultSets, messages, activePane, onPane, onExport
               </div>
             ))}
             {grids.map((set, index) => (
-              <ResultGrid key={index} set={set} index={index} total={grids.length} />
+              <ResultGrid
+                key={index}
+                set={set}
+                index={index}
+                total={grids.length}
+                caption={captions?.[index]}
+              />
             ))}
           </>
         )}
@@ -88,7 +95,17 @@ export function ResultsPane({ resultSets, messages, activePane, onPane, onExport
   );
 }
 
-function ResultGrid({ set, index, total }: { set: ResultSet; index: number; total: number }) {
+function ResultGrid({
+  set,
+  index,
+  total,
+  caption,
+}: {
+  set: ResultSet;
+  index: number;
+  total: number;
+  caption?: string;
+}) {
   const widths = useMemo(() => measure(set), [set]);
   const width = 46 + widths.reduce((sum, item) => sum + item, 0);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -418,9 +435,9 @@ function ResultGrid({ set, index, total }: { set: ResultSet; index: number; tota
 
   return (
     <div className="grid-block">
-      {total > 1 ? (
+      {caption || total > 1 ? (
         <div className="grid-caption">
-          Result set {index + 1}
+          {caption ?? `Result set ${index + 1}`}
           {set.truncated ? " (truncated)" : ""}
         </div>
       ) : null}

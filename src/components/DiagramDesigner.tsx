@@ -15,6 +15,7 @@ import {
   type RefEnd,
 } from "../sql/dbml";
 import { dbmlHints, registerDbmlEditor, type DbmlHint } from "../sql/dbmlEditor";
+import { dbmlEditorTheme, type ColorScheme } from "../theme";
 import { errorText, type EngineKind } from "../types";
 
 const hintKey = { tab: 2, enter: 3, escape: 9, space: 10, up: 16, down: 18, ctrl: 2048 };
@@ -56,6 +57,7 @@ const STUB = 22;
 export function DiagramDesigner(props: {
   dbml: string;
   engine: EngineKind;
+  theme?: ColorScheme;
   onDbml: (value: string) => void;
   onEngine: (engine: EngineKind) => void;
   onImplement: (sql: string) => void;
@@ -297,7 +299,7 @@ export function DiagramDesigner(props: {
           <div className="diagram-code">
             <Editor
               language="dbml"
-              theme="dbml"
+              theme={dbmlEditorTheme(props.theme ?? "light")}
               height="100%"
               value={props.dbml}
               beforeMount={registerDbmlEditor}

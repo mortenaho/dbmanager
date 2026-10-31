@@ -129,6 +129,26 @@ export function registerDbmlEditor(monaco: Monaco) {
       "editorCursor.foreground": "#000000",
     },
   });
+  monaco.editor.defineTheme("dbml-dark", {
+    base: "vs-dark",
+    inherit: true,
+    rules: [
+      { token: "keyword", foreground: "569CD6" },
+      { token: "type", foreground: "4EC9B0" },
+      { token: "string", foreground: "CE9178" },
+      { token: "comment", foreground: "6A9955" },
+      { token: "number", foreground: "B5CEA8" },
+      { token: "attribute", foreground: "DCDCAA" },
+      { token: "identifier", foreground: "D4D4D4" },
+    ],
+    colors: {
+      "editor.background": "#1E1E1E",
+      "editor.foreground": "#D4D4D4",
+      "editorLineNumber.foreground": "#858585",
+      "editor.selectionBackground": "#264F78",
+      "editorCursor.foreground": "#AEAFAD",
+    },
+  });
 
 }
 

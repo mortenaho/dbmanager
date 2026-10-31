@@ -55,6 +55,8 @@ pub struct BackupInfo {
     pub table_name: String,
     pub row_count: i64,
     pub rolled_back: bool,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -533,7 +535,8 @@ pub fn get_query(conn: &Connection, id: i64) -> Result<HistoryDetail, String> {
 pub fn backup_info(conn: &Connection, id: i64) -> Result<Vec<BackupInfo>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT statement_index, kind, table_name, row_count, rolled_back
+            "SELECT statement_index, kind, table_name, row_count, rolled_back,
+                    columns_json, rows_json
              FROM snapshots WHERE query_id = ?1 ORDER BY statement_index",
         )
         .map_err(|e| e.to_string())?;
@@ -541,12 +544,22 @@ pub fn backup_info(conn: &Connection, id: i64) -> Result<Vec<BackupInfo>, String
     let mut items = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let rolled: i64 = row.get(4).map_err(|e| e.to_string())?;
+        let columns: Vec<String> = serde_json::from_str(
+            &row.get::<_, String>(5).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let rows: Vec<Vec<Option<String>>> = serde_json::from_str(
+            &row.get::<_, String>(6).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         items.push(BackupInfo {
             statement_index: row.get(0).map_err(|e| e.to_string())?,
             kind: row.get(1).map_err(|e| e.to_string())?,
             table_name: row.get(2).map_err(|e| e.to_string())?,
             row_count: row.get(3).map_err(|e| e.to_string())?,
             rolled_back: rolled != 0,
+            columns,
+            rows,
         });
     }
     Ok(items)
@@ -842,6 +855,8 @@ mod tests {
         assert_eq!(detail.backups.len(), 1);
         assert!(!detail.backups[0].rolled_back);
         assert_eq!(detail.backups[0].table_name, "\"users\"");
+        assert_eq!(detail.backups[0].columns, ["id", "name"]);
+        assert_eq!(detail.backups[0].rows[0][1].as_deref(), Some("Ada"));
         let pending = load_pending_backups(&conn, id).unwrap();
         assert_eq!(pending[0].rows[0][1].as_deref(), Some("Ada"));
         mark_rolled_back(&conn, id).unwrap();

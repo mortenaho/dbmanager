@@ -244,8 +244,8 @@ export function ObjectExplorer({
     return () => observer.disconnect();
   }, [connections.length]);
 
-  const start = Math.min(startIndex, Math.max(0, rows.length - 1));
-  const visibleCount = Math.ceil(viewport / TREE_ROW) + TREE_OVERSCAN * 2;
+  const start = needle ? 0 : clampTreeStart(rows.length, startIndex, viewport);
+  const visibleCount = needle ? rows.length : Math.ceil(viewport / TREE_ROW) + TREE_OVERSCAN * 2;
   const visible = rows.slice(start, start + visibleCount);
 
   function publishDetails(
@@ -451,6 +451,7 @@ export function ObjectExplorer({
         className="tree"
         ref={treeRef}
         onScroll={(event) => {
+          if (needle) return;
           const next = Math.max(0, Math.floor(event.currentTarget.scrollTop / TREE_ROW) - TREE_OVERSCAN);
           setStartIndex((current) => (current === next ? current : next));
         }}
@@ -510,6 +511,16 @@ export function ObjectExplorer({
 
 const TREE_ROW = 22;
 const TREE_OVERSCAN = 10;
+
+function clampTreeStart(rowCount: number, index: number, viewport: number): number {
+  if (rowCount <= 0) return 0;
+  const page = Math.max(1, Math.ceil(viewport / TREE_ROW));
+  // A short list must start at the top. A stale scroll index otherwise draws
+  // the rows below the viewport, so a search looks like it found nothing.
+  if (rowCount <= page + TREE_OVERSCAN) return 0;
+  const maxStart = Math.max(0, rowCount - page);
+  return Math.min(Math.max(0, index), maxStart);
+}
 
 type IconName = "server" | "database" | "folder" | "table" | "view" | "procedure" | "function" | "column" | "none";
 
@@ -581,10 +592,7 @@ function buildTree(input: {
       const key = `${connection.id}:${database}`;
       const loaded = Object.prototype.hasOwnProperty.call(input.objects, key);
       const items = input.objects[key] ?? [];
-      const labelHit =
-        !input.needle ||
-        database.toLowerCase().includes(input.needle) ||
-        connection.name.toLowerCase().includes(input.needle);
+      const labelHit = !input.needle || database.toLowerCase().includes(input.needle);
       const objectHit =
         Boolean(input.needle) && items.some((object) => matchesObject(object, input.needle, connection.engine));
       if (input.needle && !loaded && !input.errors[key]) {
@@ -627,7 +635,9 @@ function buildTree(input: {
 }
 
 function matchesObject(object: DbObject, needle: string, engine: EngineKind): boolean {
-  if (object.kind !== "table" && object.kind !== "procedure") return false;
+  if (object.kind !== "table" && object.kind !== "view" && object.kind !== "procedure" && object.kind !== "function") {
+    return false;
+  }
   const name = object.name.toLowerCase();
   const qualified = engine === "mysql" ? name : `${object.schema.toLowerCase()}.${name}`;
   return name.includes(needle) || qualified.includes(needle);
