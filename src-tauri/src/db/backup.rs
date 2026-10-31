@@ -298,13 +298,17 @@ pub fn begin_sql(engine: EngineKind) -> &'static str {
     match engine {
         EngineKind::Postgres => "BEGIN",
         EngineKind::Mysql => "START TRANSACTION",
-        EngineKind::Mssql => "BEGIN TRANSACTION",
+        // A failed BEGIN through sp_executesql can leave @@TRANCOUNT at 1.
+        // Clear that leftover, then start the backup transaction for real.
+        EngineKind::Mssql => "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; BEGIN TRANSACTION",
     }
 }
 
 pub fn begin_restore_sql(engine: EngineKind) -> &'static str {
     match engine {
-        EngineKind::Mssql => "SET XACT_ABORT ON; BEGIN TRANSACTION",
+        EngineKind::Mssql => {
+            "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; SET XACT_ABORT ON; BEGIN TRANSACTION"
+        }
         _ => begin_sql(engine),
     }
 }

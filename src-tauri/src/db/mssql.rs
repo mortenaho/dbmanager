@@ -426,7 +426,12 @@ pub async fn execute(client: &mut MssqlClient, sql: &str, max_rows: usize) -> Ou
     // simple_query discards the DONE token, which is the only place SQL Server
     // reports how many rows an INSERT, UPDATE, or DELETE changed. A batch with
     // no result set can go through execute(), which keeps those counts.
+    // BEGIN, COMMIT, and ROLLBACK must stay on a raw batch. Inside sp_executesql
+    // they change @@TRANCOUNT and SQL Server rejects the call with error 266.
     if !batch_returns_rows(sql) {
+        if batch_changes_transaction(sql) {
+            return execute_session_batch(client, sql).await;
+        }
         return execute_counted(client, sql).await;
     }
     let store_limit = max_rows.min(STORE_ROW_LIMIT).max(1);
@@ -559,6 +564,23 @@ fn finish_set(set: ResultSet, sets: &mut Vec<ResultSet>, messages: &mut Vec<Quer
     sets.push(set);
 }
 
+async fn execute_session_batch(client: &mut MssqlClient, sql: &str) -> Outcome {
+    match exec(client, sql).await {
+        Ok(()) => Outcome::Done {
+            response: QueryResponse {
+                result_sets: Vec::new(),
+                messages: vec![QueryMessage::info("Commands completed successfully.")],
+                elapsed_ms: 0,
+            },
+            drop_connection: false,
+        },
+        Err(message) => Outcome::Failed {
+            message,
+            drop_connection: false,
+        },
+    }
+}
+
 async fn execute_counted(client: &mut MssqlClient, sql: &str) -> Outcome {
     let result = match client.execute(sql, &[]).await {
         Ok(result) => result,
@@ -593,6 +615,15 @@ async fn execute_counted(client: &mut MssqlClient, sql: &str) -> Outcome {
         },
         drop_connection: false,
     }
+}
+
+fn batch_changes_transaction(sql: &str) -> bool {
+    split_statements(sql).into_iter().any(|statement| {
+        matches!(
+            statement_words(&statement).first().map(String::as_str),
+            Some("BEGIN" | "COMMIT" | "ROLLBACK" | "SAVE")
+        )
+    })
 }
 
 fn batch_returns_rows(sql: &str) -> bool {
@@ -856,7 +887,7 @@ fn format_type(name: &str, max_length: i32, precision: i32, scale: i32) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::batch_returns_rows;
+    use super::{batch_changes_transaction, batch_returns_rows};
 
     #[test]
     fn plain_writes_keep_their_row_counts() {
@@ -880,6 +911,22 @@ mod tests {
         ));
         assert!(!batch_returns_rows(
             "UPDATE posts SET note = 'select this' WHERE id = 1"
+        ));
+    }
+
+    #[test]
+    fn transaction_control_is_not_sent_through_a_procedure() {
+        assert!(batch_changes_transaction("BEGIN TRANSACTION"));
+        assert!(batch_changes_transaction("COMMIT TRANSACTION"));
+        assert!(batch_changes_transaction("ROLLBACK TRANSACTION"));
+        assert!(batch_changes_transaction(
+            "SET XACT_ABORT ON; BEGIN TRANSACTION"
+        ));
+        assert!(batch_changes_transaction(
+            "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; BEGIN TRANSACTION"
+        ));
+        assert!(!batch_changes_transaction(
+            "UPDATE posts SET title = N'a' WHERE id = 1"
         ));
     }
 }

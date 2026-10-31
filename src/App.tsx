@@ -61,6 +61,7 @@ import {
   bindModelEngine,
   emptyCatalog,
   bindEditorHistory,
+  executionSql,
   formatSql,
   insertSnippet,
   registerSqlEditor,
@@ -391,10 +392,14 @@ export default function App() {
       openConnect();
       return;
     }
+    const target = executionSql(editors.current.get(tab.id), tab.sql);
     patchTab(tab.id, { running: true, messages: [], resultSets: [], activePane: "results" });
     const started = performance.now();
     try {
-      const response = await executeSql(tab.connectionId, tab.database, tab.sql);
+      const response = await executeSql(tab.connectionId, tab.database, target.sql);
+      if (target.selected) {
+        response.messages = [{ level: "info", text: "Executed the selected text." }, ...response.messages];
+      }
       const failed = response.messages.some((message) => message.level === "error");
       const hasGrid = response.resultSets.some((set) => set.columns.length > 0);
       const guard = hasGrid ? undefined : response.messages.find((message) => message.level === "warn");
@@ -427,9 +432,13 @@ export default function App() {
       openConnect();
       return;
     }
+    const target = executionSql(editors.current.get(tab.id), tab.sql);
     patchTab(tab.id, { running: true });
     try {
-      const response = await parseSql(tab.connectionId, tab.database, tab.sql);
+      const response = await parseSql(tab.connectionId, tab.database, target.sql);
+      if (target.selected) {
+        response.messages = [{ level: "info", text: "Parsed the selected text." }, ...response.messages];
+      }
       patchTab(tab.id, {
         running: false,
         messages: response.messages,
@@ -1086,11 +1095,11 @@ export default function App() {
           <NewQueryIcon />
         </button>
         <span className="tool-sep" />
-        <button className="tool primary" title="Execute (F5)" disabled={editorLocked || !activeTab || activeTab.running} onClick={() => void runQuery()}>
+        <button className="tool primary" title="Execute (F5). Runs the highlighted text, or the whole script when nothing is selected." disabled={editorLocked || !activeTab || activeTab.running} onMouseDown={(event) => event.preventDefault()} onClick={() => void runQuery()}>
           <PlayIcon />
           <span>Execute</span>
         </button>
-        <button className="tool" title="Parse (Ctrl+F5)" disabled={editorLocked || !activeTab || activeTab.running} onClick={() => void parseQuery()}>
+        <button className="tool" title="Parse (Ctrl+F5). Checks the highlighted text, or the whole script when nothing is selected." disabled={editorLocked || !activeTab || activeTab.running} onMouseDown={(event) => event.preventDefault()} onClick={() => void parseQuery()}>
           <CheckIcon />
         </button>
         <button className="tool" title="Format SQL (Shift+Alt+F)" disabled={editorLocked || !activeTab} onClick={() => formatQuery()}>

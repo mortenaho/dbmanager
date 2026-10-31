@@ -99,6 +99,7 @@ export function ObjectExplorer({
   const connectionsRef = useRef(connections);
   const expandedRef = useRef(expanded);
   const objectsRef = useRef(objects);
+  const loadingRef = useRef(loading);
   const shownFolder = useRef<{
     connectionId: string;
     database: string;
@@ -110,6 +111,7 @@ export function ObjectExplorer({
   connectionsRef.current = connections;
   expandedRef.current = expanded;
   objectsRef.current = objects;
+  loadingRef.current = loading;
 
   useEffect(() => {
     const close = (event: globalThis.MouseEvent) => {
@@ -132,11 +134,16 @@ export function ObjectExplorer({
 
   async function loadObjects(connection: Connection, database: string, force = false) {
     const key = `${connection.id}:${database}`;
-    if (!force && (objects[key] || loading.has(key))) return;
-    setLoading((current) => new Set(current).add(key));
+    if (!force && (objectsRef.current[key] || loadingRef.current.has(key))) return;
+    loadingRef.current = new Set(loadingRef.current).add(key);
+    setLoading(loadingRef.current);
     try {
       const rows = await listObjects(connection.id, database);
-      setObjects((current) => ({ ...current, [key]: rows }));
+      setObjects((current) => {
+        const next = { ...current, [key]: rows };
+        objectsRef.current = next;
+        return next;
+      });
       setErrors((current) => {
         const next = { ...current };
         delete next[key];
@@ -148,10 +155,24 @@ export function ObjectExplorer({
       setLoading((current) => {
         const next = new Set(current);
         next.delete(key);
+        loadingRef.current = next;
         return next;
       });
     }
   }
+
+  useEffect(() => {
+    const term = filter.trim();
+    if (!term) return;
+    const handle = window.setTimeout(() => {
+      for (const connection of connectionsRef.current) {
+        for (const database of connection.databases) {
+          void loadObjects(connection, database);
+        }
+      }
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [filter, connections]);
 
   useEffect(() => {
     if (reloadKey === 0) return;
@@ -207,6 +228,11 @@ export function ObjectExplorer({
   const treeRef = useRef<HTMLDivElement>(null);
   const [startIndex, setStartIndex] = useState(0);
   const [viewport, setViewport] = useState(480);
+
+  useEffect(() => {
+    setStartIndex(0);
+    if (treeRef.current) treeRef.current.scrollTop = 0;
+  }, [needle]);
 
   useEffect(() => {
     const node = treeRef.current;
@@ -416,7 +442,8 @@ export function ObjectExplorer({
       </div>
       <input
         className="explorer-filter"
-        placeholder="Filter"
+        placeholder="Search tables and procedures"
+        title="Find a table or stored procedure by name"
         value={filter}
         onChange={(event) => onFilter(event.target.value)}
       />
@@ -537,7 +564,7 @@ function buildTree(input: {
   const rows: TreeItem[] = [];
   for (const connection of input.connections) {
     const serverId = `server:${connection.id}`;
-    const serverOpen = input.expanded.has(serverId);
+    const serverOpen = input.expanded.has(serverId) || Boolean(input.needle);
     rows.push({
       id: serverId,
       depth: 0,
@@ -548,16 +575,26 @@ function buildTree(input: {
       kind: { type: "server", connection },
     });
     if (!serverOpen) continue;
-    const databases = connection.databases.filter(
-      (name) =>
-        !input.needle ||
-        name.toLowerCase().includes(input.needle) ||
-        connection.name.toLowerCase().includes(input.needle),
-    );
-    for (const database of databases) {
-      const dbId = `db:${connection.id}:${database}`;
+    let pending = 0;
+    let shown = 0;
+    for (const database of connection.databases) {
       const key = `${connection.id}:${database}`;
-      const dbOpen = input.expanded.has(dbId);
+      const loaded = Object.prototype.hasOwnProperty.call(input.objects, key);
+      const items = input.objects[key] ?? [];
+      const labelHit =
+        !input.needle ||
+        database.toLowerCase().includes(input.needle) ||
+        connection.name.toLowerCase().includes(input.needle);
+      const objectHit =
+        Boolean(input.needle) && items.some((object) => matchesObject(object, input.needle, connection.engine));
+      if (input.needle && !loaded && !input.errors[key]) {
+        pending += 1;
+        continue;
+      }
+      if (input.needle && loaded && !labelHit && !objectHit && !input.errors[key]) continue;
+      shown += 1;
+      const dbId = `db:${connection.id}:${database}`;
+      const dbOpen = input.expanded.has(dbId) || objectHit;
       rows.push({
         id: dbId,
         depth: 1,
@@ -574,14 +611,26 @@ function buildTree(input: {
       if (input.loading.has(key)) {
         rows.push(statusRow(`loading:${key}`, 2, "Loading...", "status"));
       }
-      const items = input.objects[key] ?? [];
-      pushFolder(rows, input, connection, database, key, "Tables", "tables", "table", items);
-      pushFolder(rows, input, connection, database, key, "Views", "views", "view", items);
-      pushFolder(rows, input, connection, database, key, "Stored Procedures", "procedures", "procedure", items);
-      pushFolder(rows, input, connection, database, key, "Functions", "functions", "function", items);
+      const objectNeedle = objectHit ? input.needle : "";
+      pushFolder(rows, input, connection, database, key, "Tables", "tables", "table", items, objectNeedle);
+      pushFolder(rows, input, connection, database, key, "Views", "views", "view", items, objectNeedle);
+      pushFolder(rows, input, connection, database, key, "Stored Procedures", "procedures", "procedure", items, objectNeedle);
+      pushFolder(rows, input, connection, database, key, "Functions", "functions", "function", items, objectNeedle);
+    }
+    if (input.needle && pending > 0) {
+      rows.push(statusRow(`search:${connection.id}`, 1, pending === 1 ? "Searching 1 database..." : `Searching ${pending} databases...`, "status"));
+    } else if (input.needle && shown === 0) {
+      rows.push(statusRow(`none:${connection.id}`, 1, "No matching tables or procedures.", "status"));
     }
   }
   return rows;
+}
+
+function matchesObject(object: DbObject, needle: string, engine: EngineKind): boolean {
+  if (object.kind !== "table" && object.kind !== "procedure") return false;
+  const name = object.name.toLowerCase();
+  const qualified = engine === "mysql" ? name : `${object.schema.toLowerCase()}.${name}`;
+  return name.includes(needle) || qualified.includes(needle);
 }
 
 function pushFolder(
@@ -599,21 +648,26 @@ function pushFolder(
   folderId: string,
   folder: ObjectFolder,
   items: DbObject[],
+  needle: string,
 ) {
+  const listed = items.filter((object) => {
+    if (object.kind !== folder) return false;
+    return !needle || matchesObject(object, needle, connection.engine);
+  });
+  if (needle && listed.length === 0) return;
   const id = `${folderId}:${key}`;
-  const open = input.expanded.has(id);
+  const open = Boolean(needle) || input.expanded.has(id);
   rows.push({
     id,
     depth: 2,
-    label: title,
+    label: needle ? `${title} (${listed.length})` : title,
     icon: "folder",
     canExpand: true,
     open,
     kind: { type: "folder", connection, database, folder, title },
   });
   if (!open) return;
-  for (const object of items) {
-    if (object.kind !== folder) continue;
+  for (const object of listed) {
     const objectId = `obj:${connection.id}:${database}:${object.schema}.${object.name}`;
     const columnKey = `${connection.id}:${database}:${object.schema}.${object.name}`;
     const routine = folder === "procedure" || folder === "function";

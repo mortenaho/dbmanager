@@ -25,6 +25,18 @@ export function bindModelEngine(model: editor.ITextModel, engine: EngineKind) {
   engines.set(model, engine);
 }
 
+export function executionSql(
+  codeEditor: editor.IStandaloneCodeEditor | undefined,
+  documentSql: string,
+): { sql: string; selected: boolean } {
+  const model = codeEditor?.getModel();
+  const selection = codeEditor?.getSelection();
+  if (!model || !selection || selection.isEmpty()) return { sql: documentSql, selected: false };
+  const text = model.getValueInRange(selection).trim();
+  if (!text) return { sql: documentSql, selected: false };
+  return { sql: text, selected: true };
+}
+
 export function formatSql(sql: string, engine: EngineKind): string {
   if (!sql.trim()) return sql;
   const language: SqlLanguage = engine === "mssql" ? "transactsql" : engine === "mysql" ? "mysql" : "postgresql";
