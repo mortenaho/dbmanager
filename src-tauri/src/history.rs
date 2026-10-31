@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use chrono::{Duration, SecondsFormat, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use tauri::{AppHandle, Manager};
 
 use crate::model::{EngineKind, QueryMessage, ResultSet};
@@ -33,6 +33,8 @@ pub struct HistoryQuery {
     pub error: String,
     pub elapsed_ms: i64,
     pub row_count: i64,
+    pub backup_rows: i64,
+    pub rollback_count: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -42,6 +44,42 @@ pub struct HistoryDetail {
     pub query: HistoryQuery,
     pub messages: Vec<QueryMessage>,
     pub result_sets: Vec<ResultSet>,
+    pub backups: Vec<BackupInfo>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupInfo {
+    pub statement_index: i64,
+    pub kind: String,
+    pub table_name: String,
+    pub row_count: i64,
+    pub rolled_back: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewBackup {
+    pub statement_index: i64,
+    pub kind: String,
+    pub table_name: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub key_columns: Vec<String>,
+    pub write_columns: Vec<String>,
+    pub identity_insert: bool,
+    pub overriding_system: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedBackup {
+    pub kind: String,
+    pub table_name: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub key_columns: Vec<String>,
+    pub write_columns: Vec<String>,
+    pub identity_insert: bool,
+    pub overriding_system: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -67,7 +105,10 @@ pub struct QueryRecord<'a> {
 }
 
 impl HistoryDb {
-    pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T, String>) -> Result<T, String> {
+    pub fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
         let conn = self.0.lock().map_err(|e| e.to_string())?;
         f(&conn)
     }
@@ -79,7 +120,11 @@ impl HistoryDb {
     }
 
     pub fn remember(&self, record: QueryRecord<'_>) {
-        if let Err(error) = self.with_conn(|conn| record_query(conn, record)) {
+        self.remember_with(record, &[]);
+    }
+
+    pub fn remember_with(&self, record: QueryRecord<'_>, backups: &[NewBackup]) {
+        if let Err(error) = self.with_conn(|conn| record_query(conn, record, backups)) {
             eprintln!("history: {error}");
         }
     }
@@ -87,9 +132,8 @@ impl HistoryDb {
 
 pub fn open_app(app: &AppHandle) -> Result<HistoryDb, Box<dyn std::error::Error>> {
     let dir = app.path().app_config_dir()?;
-    let conn = open_file(&dir.join("history.db")).map_err(|message| {
-        std::io::Error::new(std::io::ErrorKind::Other, message)
-    })?;
+    let conn = open_file(&dir.join("history.db"))
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::Other, message))?;
     Ok(HistoryDb(Mutex::new(conn)))
 }
 
@@ -151,14 +195,35 @@ fn migrate(conn: &Connection) -> Result<(), String> {
             truncated INTEGER NOT NULL,
             PRIMARY KEY (query_id, set_index),
             FOREIGN KEY (query_id) REFERENCES queries(id) ON DELETE CASCADE
-         );",
+         );
+         CREATE TABLE IF NOT EXISTS snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_id INTEGER NOT NULL,
+            statement_index INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            columns_json TEXT NOT NULL,
+            rows_json TEXT NOT NULL,
+            key_columns_json TEXT NOT NULL,
+            write_columns_json TEXT NOT NULL,
+            identity_insert INTEGER NOT NULL,
+            overriding_system INTEGER NOT NULL,
+            row_count INTEGER NOT NULL,
+            rolled_back INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (query_id) REFERENCES queries(id) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS snapshots_query ON snapshots(query_id);",
     )
     .map_err(|e| e.to_string())
 }
 
 fn setting_text(conn: &Connection, key: &str) -> Result<String, String> {
     let value: Option<String> = conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
         .optional()
         .map_err(|e| e.to_string())?;
     Ok(value.unwrap_or_default())
@@ -194,7 +259,12 @@ pub fn save_settings(conn: &Connection, days: u32) -> Result<AppSettings, String
     load_settings(conn)
 }
 
-pub fn save_assistant(conn: &Connection, base_url: &str, model: &str, api_key: &str) -> Result<AppSettings, String> {
+pub fn save_assistant(
+    conn: &Connection,
+    base_url: &str,
+    model: &str,
+    api_key: &str,
+) -> Result<AppSettings, String> {
     put_setting(conn, "ai_base_url", base_url.trim())?;
     put_setting(conn, "ai_model", model.trim())?;
     put_setting(conn, "ai_api_key", api_key.trim())?;
@@ -212,8 +282,14 @@ pub fn purge(conn: &Connection, days: u32) -> Result<(), String> {
     if days == 0 {
         return Ok(());
     }
-    let cutoff = (Utc::now() - Duration::days(days as i64)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    let cutoff =
+        (Utc::now() - Duration::days(days as i64)).to_rfc3339_opts(SecondsFormat::Millis, true);
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM snapshots WHERE query_id IN (SELECT id FROM queries WHERE created_at < ?1)",
+        params![cutoff],
+    )
+    .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM queries WHERE created_at < ?1", params![cutoff])
         .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM events WHERE created_at < ?1", params![cutoff])
@@ -250,7 +326,8 @@ pub fn list_events(conn: &Connection, needle: &str, limit: i64) -> Result<Vec<Ap
     let mut rows = if needle.is_empty() {
         stmt.query(params![limit]).map_err(|e| e.to_string())?
     } else {
-        stmt.query(params![like(needle), limit]).map_err(|e| e.to_string())?
+        stmt.query(params![like(needle), limit])
+            .map_err(|e| e.to_string())?
     };
     let mut items = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
@@ -265,7 +342,11 @@ pub fn list_events(conn: &Connection, needle: &str, limit: i64) -> Result<Vec<Ap
     Ok(items)
 }
 
-pub fn record_query(conn: &Connection, record: QueryRecord<'_>) -> Result<i64, String> {
+pub fn record_query(
+    conn: &Connection,
+    record: QueryRecord<'_>,
+    backups: &[NewBackup],
+) -> Result<i64, String> {
     let (sets, notes) = cache_sets(record.sets);
     let mut messages = record.messages.to_vec();
     for note in notes {
@@ -309,7 +390,39 @@ pub fn record_query(conn: &Connection, record: QueryRecord<'_>) -> Result<i64, S
         )
         .map_err(|e| e.to_string())?;
     }
-    let level = if record.status == "error" { "error" } else { "info" };
+    for backup in backups {
+        let columns_json = serde_json::to_string(&backup.columns).map_err(|e| e.to_string())?;
+        let rows_json = serde_json::to_string(&backup.rows).map_err(|e| e.to_string())?;
+        let key_columns_json =
+            serde_json::to_string(&backup.key_columns).map_err(|e| e.to_string())?;
+        let write_columns_json =
+            serde_json::to_string(&backup.write_columns).map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO snapshots(
+                query_id, statement_index, kind, table_name, columns_json, rows_json,
+                key_columns_json, write_columns_json, identity_insert, overriding_system, row_count, rolled_back
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)",
+            params![
+                id,
+                backup.statement_index,
+                backup.kind,
+                backup.table_name,
+                columns_json,
+                rows_json,
+                key_columns_json,
+                write_columns_json,
+                if backup.identity_insert { 1 } else { 0 },
+                if backup.overriding_system { 1 } else { 0 },
+                backup.rows.len() as i64
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let level = if record.status == "error" {
+        "error"
+    } else {
+        "info"
+    };
     tx.execute(
         "INSERT INTO events(created_at, level, kind, message) VALUES (?1, ?2, 'query', ?3)",
         params![
@@ -317,7 +430,11 @@ pub fn record_query(conn: &Connection, record: QueryRecord<'_>) -> Result<i64, S
             level,
             format!(
                 "{} {} — {} ({} rows, {} ms)",
-                if record.status == "error" { "Failed" } else { "Ran" },
+                if record.status == "error" {
+                    "Failed"
+                } else {
+                    "Ran"
+                },
                 record.database,
                 preview,
                 row_count,
@@ -330,14 +447,22 @@ pub fn record_query(conn: &Connection, record: QueryRecord<'_>) -> Result<i64, S
     Ok(id)
 }
 
-pub fn list_queries(conn: &Connection, needle: &str, limit: i64) -> Result<Vec<HistoryQuery>, String> {
+pub fn list_queries(
+    conn: &Connection,
+    needle: &str,
+    limit: i64,
+) -> Result<Vec<HistoryQuery>, String> {
     let limit = limit.clamp(1, 500);
     let needle = needle.trim();
     let sql = if needle.is_empty() {
-        "SELECT id, created_at, engine, server, database_name, sql, status, error, elapsed_ms, row_count
+        "SELECT id, created_at, engine, server, database_name, sql, status, error, elapsed_ms, row_count,
+                COALESCE((SELECT SUM(row_count) FROM snapshots s WHERE s.query_id = queries.id), 0),
+                COALESCE((SELECT COUNT(*) FROM snapshots s WHERE s.query_id = queries.id AND s.rolled_back = 0), 0)
          FROM queries ORDER BY id DESC LIMIT ?1"
     } else {
-        "SELECT id, created_at, engine, server, database_name, sql, status, error, elapsed_ms, row_count
+        "SELECT id, created_at, engine, server, database_name, sql, status, error, elapsed_ms, row_count,
+                COALESCE((SELECT SUM(row_count) FROM snapshots s WHERE s.query_id = queries.id), 0),
+                COALESCE((SELECT COUNT(*) FROM snapshots s WHERE s.query_id = queries.id AND s.rolled_back = 0), 0)
          FROM queries
          WHERE sql LIKE ?1 ESCAPE '\\' OR database_name LIKE ?1 ESCAPE '\\'
             OR server LIKE ?1 ESCAPE '\\' OR error LIKE ?1 ESCAPE '\\'
@@ -347,7 +472,8 @@ pub fn list_queries(conn: &Connection, needle: &str, limit: i64) -> Result<Vec<H
     let mut rows = if needle.is_empty() {
         stmt.query(params![limit]).map_err(|e| e.to_string())?
     } else {
-        stmt.query(params![like(needle), limit]).map_err(|e| e.to_string())?
+        stmt.query(params![like(needle), limit])
+            .map_err(|e| e.to_string())?
     };
     let mut items = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
@@ -359,11 +485,14 @@ pub fn list_queries(conn: &Connection, needle: &str, limit: i64) -> Result<Vec<H
 pub fn get_query(conn: &Connection, id: i64) -> Result<HistoryDetail, String> {
     let query = conn
         .query_row(
-            "SELECT id, created_at, engine, server, database_name, sql, status, error, elapsed_ms, row_count, messages_json
+            "SELECT id, created_at, engine, server, database_name, sql, status, error, elapsed_ms, row_count,
+                    COALESCE((SELECT SUM(row_count) FROM snapshots s WHERE s.query_id = queries.id), 0),
+                    COALESCE((SELECT COUNT(*) FROM snapshots s WHERE s.query_id = queries.id AND s.rolled_back = 0), 0),
+                    messages_json
              FROM queries WHERE id = ?1",
             params![id],
             |row| {
-                let messages_json: String = row.get(10)?;
+                let messages_json: String = row.get(12)?;
                 Ok((map_query(row)?, messages_json))
             },
         )
@@ -378,10 +507,12 @@ pub fn get_query(conn: &Connection, id: i64) -> Result<HistoryDetail, String> {
     let mut rows = stmt.query(params![id]).map_err(|e| e.to_string())?;
     let mut result_sets = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let columns: Vec<String> = serde_json::from_str(&row.get::<_, String>(0).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        let columns: Vec<String> =
+            serde_json::from_str(&row.get::<_, String>(0).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
         let values: Vec<Vec<Option<String>>> =
-            serde_json::from_str(&row.get::<_, String>(1).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            serde_json::from_str(&row.get::<_, String>(1).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
         let affected: i64 = row.get(2).map_err(|e| e.to_string())?;
         let truncated: i64 = row.get(3).map_err(|e| e.to_string())?;
         result_sets.push(ResultSet {
@@ -395,7 +526,74 @@ pub fn get_query(conn: &Connection, id: i64) -> Result<HistoryDetail, String> {
         query: query.0,
         messages,
         result_sets,
+        backups: backup_info(conn, id)?,
     })
+}
+
+pub fn backup_info(conn: &Connection, id: i64) -> Result<Vec<BackupInfo>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT statement_index, kind, table_name, row_count, rolled_back
+             FROM snapshots WHERE query_id = ?1 ORDER BY statement_index",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query(params![id]).map_err(|e| e.to_string())?;
+    let mut items = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let rolled: i64 = row.get(4).map_err(|e| e.to_string())?;
+        items.push(BackupInfo {
+            statement_index: row.get(0).map_err(|e| e.to_string())?,
+            kind: row.get(1).map_err(|e| e.to_string())?,
+            table_name: row.get(2).map_err(|e| e.to_string())?,
+            row_count: row.get(3).map_err(|e| e.to_string())?,
+            rolled_back: rolled != 0,
+        });
+    }
+    Ok(items)
+}
+
+pub fn load_pending_backups(conn: &Connection, id: i64) -> Result<Vec<LoadedBackup>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, table_name, columns_json, rows_json, key_columns_json, write_columns_json,
+                    identity_insert, overriding_system
+             FROM snapshots
+             WHERE query_id = ?1 AND rolled_back = 0
+             ORDER BY statement_index DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query(params![id]).map_err(|e| e.to_string())?;
+    let mut items = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let identity: i64 = row.get(6).map_err(|e| e.to_string())?;
+        let overriding: i64 = row.get(7).map_err(|e| e.to_string())?;
+        items.push(LoadedBackup {
+            kind: row.get(0).map_err(|e| e.to_string())?,
+            table_name: row.get(1).map_err(|e| e.to_string())?,
+            columns: serde_json::from_str(&row.get::<_, String>(2).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?,
+            rows: serde_json::from_str(&row.get::<_, String>(3).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?,
+            key_columns: serde_json::from_str(&row.get::<_, String>(4).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?,
+            write_columns: serde_json::from_str(
+                &row.get::<_, String>(5).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?,
+            identity_insert: identity != 0,
+            overriding_system: overriding != 0,
+        });
+    }
+    Ok(items)
+}
+
+pub fn mark_rolled_back(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE snapshots SET rolled_back = 1 WHERE query_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn delete_query(conn: &Connection, id: i64) -> Result<(), String> {
@@ -406,8 +604,12 @@ pub fn delete_query(conn: &Connection, id: i64) -> Result<(), String> {
 
 pub fn clear_all(conn: &Connection) -> Result<(), String> {
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM queries", []).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM events", []).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM snapshots", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM queries", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM events", [])
+        .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -466,6 +668,8 @@ fn map_query(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryQuery> {
         error: row.get(7)?,
         elapsed_ms: row.get(8)?,
         row_count: row.get(9)?,
+        backup_rows: row.get(10)?,
+        rollback_count: row.get(11)?,
     })
 }
 
@@ -474,7 +678,10 @@ fn now() -> String {
 }
 
 fn like(needle: &str) -> String {
-    let escaped = needle.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let escaped = needle
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
     format!("%{escaped}%")
 }
 
@@ -512,16 +719,20 @@ mod tests {
 
     #[test]
     fn stores_query_output_without_passwords() {
-        let path = std::env::temp_dir().join(format!("dbmanager-history-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("dbmanager-history-{}.db", uuid::Uuid::new_v4()));
         let conn = open_file(&path).unwrap();
         let sets = vec![ResultSet {
             columns: vec!["id".into(), "name".into()],
-            rows: vec![vec![Some("1".into()), Some("Ada".into())], vec![Some("2".into()), None]],
+            rows: vec![
+                vec![Some("1".into()), Some("Ada".into())],
+                vec![Some("2".into()), None],
+            ],
             rows_affected: 2,
             truncated: false,
         }];
         let messages = vec![QueryMessage::info("done")];
-        let id = record_query(&conn, sample(&sets, &messages)).unwrap();
+        let id = record_query(&conn, sample(&sets, &messages), &[]).unwrap();
         let listed = list_queries(&conn, "orders", 20).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].row_count, 2);
@@ -545,14 +756,21 @@ mod tests {
 
     #[test]
     fn retention_deletes_old_history_and_keeps_forever() {
-        let path = std::env::temp_dir().join(format!("dbmanager-history-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("dbmanager-history-{}.db", uuid::Uuid::new_v4()));
         let conn = open_file(&path).unwrap();
-        record_query(&conn, sample(&[], &[])).unwrap();
+        record_query(&conn, sample(&[], &[]), &[]).unwrap();
         log_event(&conn, "info", "connect", "Connected").unwrap();
-        conn.execute("UPDATE queries SET created_at = '2000-01-01T00:00:00.000Z'", [])
-            .unwrap();
-        conn.execute("UPDATE events SET created_at = '2000-01-01T00:00:00.000Z'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE queries SET created_at = '2000-01-01T00:00:00.000Z'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET created_at = '2000-01-01T00:00:00.000Z'",
+            [],
+        )
+        .unwrap();
         purge(&conn, 0).unwrap();
         assert_eq!(list_queries(&conn, "", 20).unwrap().len(), 1);
         purge(&conn, 7).unwrap();
@@ -574,7 +792,8 @@ mod tests {
 
     #[test]
     fn caps_cached_rows() {
-        let path = std::env::temp_dir().join(format!("dbmanager-history-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("dbmanager-history-{}.db", uuid::Uuid::new_v4()));
         let conn = open_file(&path).unwrap();
         let rows = (0..MAX_CACHED_ROWS + 5)
             .map(|index| vec![Some(index.to_string())])
@@ -585,12 +804,57 @@ mod tests {
             rows_affected: (MAX_CACHED_ROWS + 5) as u64,
             truncated: false,
         }];
-        let id = record_query(&conn, sample(&sets, &[])).unwrap();
+        let id = record_query(&conn, sample(&sets, &[]), &[]).unwrap();
         let detail = get_query(&conn, id).unwrap();
         assert_eq!(detail.result_sets[0].rows.len(), MAX_CACHED_ROWS);
         assert!(detail.result_sets[0].truncated);
         assert_eq!(detail.query.row_count, (MAX_CACHED_ROWS + 5) as i64);
-        assert!(detail.messages.iter().any(|message| message.text.contains("first")));
+        assert!(
+            detail
+                .messages
+                .iter()
+                .any(|message| message.text.contains("first"))
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn stores_a_row_backup_and_marks_it_rolled_back() {
+        let path =
+            std::env::temp_dir().join(format!("dbmanager-history-{}.db", uuid::Uuid::new_v4()));
+        let conn = open_file(&path).unwrap();
+        let backup = NewBackup {
+            statement_index: 0,
+            kind: "update".into(),
+            table_name: "\"users\"".into(),
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![vec![Some("1".into()), Some("Ada".into())]],
+            key_columns: vec!["id".into()],
+            write_columns: vec!["name".into()],
+            identity_insert: false,
+            overriding_system: false,
+        };
+        let id = record_query(&conn, sample(&[], &[]), &[backup]).unwrap();
+        let listed = list_queries(&conn, "", 20).unwrap();
+        assert_eq!(listed[0].backup_rows, 1);
+        assert_eq!(listed[0].rollback_count, 1);
+        let detail = get_query(&conn, id).unwrap();
+        assert_eq!(detail.backups.len(), 1);
+        assert!(!detail.backups[0].rolled_back);
+        assert_eq!(detail.backups[0].table_name, "\"users\"");
+        let pending = load_pending_backups(&conn, id).unwrap();
+        assert_eq!(pending[0].rows[0][1].as_deref(), Some("Ada"));
+        mark_rolled_back(&conn, id).unwrap();
+        assert!(load_pending_backups(&conn, id).unwrap().is_empty());
+        let detail = get_query(&conn, id).unwrap();
+        assert!(detail.backups[0].rolled_back);
+        assert_eq!(detail.query.rollback_count, 0);
+        assert_eq!(detail.query.backup_rows, 1);
+        delete_query(&conn, id).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -6,8 +6,8 @@ use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::model::{
-    parse_row_count, quote_mssql, ColumnInfo, ColumnRef, Credentials, DbObject, QueryMessage, QueryResponse,
-    ResultSet, HARD_ROW_LIMIT, STORE_ROW_LIMIT,
+    ColumnInfo, ColumnRef, Credentials, DbObject, HARD_ROW_LIMIT, QueryMessage, QueryResponse,
+    ResultSet, STORE_ROW_LIMIT, parse_row_count, quote_mssql,
 };
 
 use super::Outcome;
@@ -52,20 +52,16 @@ pub async fn use_database(client: &mut MssqlClient, database: &str) -> Result<()
     if database.is_empty() {
         return Ok(());
     }
+    // Client::execute sends the statement through sp_executesql. USE inside
+    // that procedure does not stick, so the next query still runs in the login
+    // database and index/foreign-key lookups come back empty.
     let statement = format!("USE {}", quote_mssql(database));
-    client
-        .execute(statement, &[])
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    exec(client, &statement).await
 }
 
 pub async fn list_databases(client: &mut MssqlClient) -> Result<Vec<String>, String> {
     let rows = query_rows(client, "SELECT name FROM sys.databases ORDER BY name", &[]).await?;
-    Ok(rows
-        .iter()
-        .filter_map(|row| cell(row, 0))
-        .collect())
+    Ok(rows.iter().filter_map(|row| cell(row, 0)).collect())
 }
 
 pub async fn list_objects(
@@ -108,6 +104,82 @@ pub async fn list_objects(
         })
         .filter(|object| !object.name.is_empty())
         .collect())
+}
+
+pub async fn backup_columns(
+    client: &mut MssqlClient,
+    database: &str,
+    schema: Option<&str>,
+    table: &str,
+) -> Result<(String, String, Vec<super::backup::BackupColumn>), String> {
+    let catalog = if database.is_empty() {
+        "sys".to_string()
+    } else {
+        format!("{}.sys", quote_mssql(database))
+    };
+    let (schema_name, table_name) = if let Some(schema) = schema {
+        (schema.to_string(), table.to_string())
+    } else {
+        let sql = format!(
+            "SELECT s.name, t.name
+             FROM {catalog}.tables t
+             INNER JOIN {catalog}.schemas s ON s.schema_id = t.schema_id
+             WHERE t.object_id = OBJECT_ID(@P1)"
+        );
+        let params: [&dyn ToSql; 1] = [&table];
+        let rows = query_rows(client, &sql, &params).await?;
+        let Some(row) = rows.first() else {
+            return Err(format!(
+                "Could not find table {table} to back it up. The statement was not run."
+            ));
+        };
+        (
+            cell(row, 0).unwrap_or_default(),
+            cell(row, 1).unwrap_or_else(|| table.to_string()),
+        )
+    };
+    if schema_name.is_empty() || table_name.is_empty() {
+        return Err(format!(
+            "Could not find table {table} to back it up. The statement was not run."
+        ));
+    }
+    let sql = format!(
+        "SELECT c.name,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM {catalog}.indexes i
+                    INNER JOIN {catalog}.index_columns ic
+                        ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+                    WHERE i.is_primary_key = 1
+                      AND ic.object_id = c.object_id
+                      AND ic.column_id = c.column_id
+                ) THEN 1 ELSE 0 END,
+                CAST(c.is_identity AS int),
+                CAST(c.is_computed AS int)
+         FROM {catalog}.columns c
+         INNER JOIN {catalog}.tables t ON t.object_id = c.object_id
+         INNER JOIN {catalog}.schemas s ON s.schema_id = t.schema_id
+         WHERE s.name = @P1 AND t.name = @P2
+         ORDER BY c.column_id"
+    );
+    let params: [&dyn ToSql; 2] = [&schema_name, &table_name];
+    let rows = query_rows(client, &sql, &params).await?;
+    if rows.is_empty() {
+        return Err(format!(
+            "Could not find table {schema_name}.{table_name} to back it up. The statement was not run."
+        ));
+    }
+    let columns = rows
+        .iter()
+        .map(|row| super::backup::BackupColumn {
+            name: cell(row, 0).unwrap_or_default(),
+            primary_key: row.try_get::<i32, _>(1).ok().flatten().unwrap_or(0) == 1,
+            identity: row.try_get::<i32, _>(2).ok().flatten().unwrap_or(0) == 1,
+            identity_always: false,
+            generated: row.try_get::<i32, _>(3).ok().flatten().unwrap_or(0) == 1,
+        })
+        .collect();
+    Ok((schema_name, table_name, columns))
 }
 
 pub async fn list_columns(
@@ -351,6 +423,12 @@ fn sql_nstring(value: &str) -> String {
 }
 
 pub async fn execute(client: &mut MssqlClient, sql: &str, max_rows: usize) -> Outcome {
+    // simple_query discards the DONE token, which is the only place SQL Server
+    // reports how many rows an INSERT, UPDATE, or DELETE changed. A batch with
+    // no result set can go through execute(), which keeps those counts.
+    if !batch_returns_rows(sql) {
+        return execute_counted(client, sql).await;
+    }
     let store_limit = max_rows.min(STORE_ROW_LIMIT).max(1);
     let mut stream = match client.simple_query(sql).await {
         Ok(stream) => stream,
@@ -396,7 +474,9 @@ pub async fn execute(client: &mut MssqlClient, sql: &str, max_rows: usize) -> Ou
                     break;
                 }
                 if set.rows.len() < store_limit {
-                    let values = (0..row.columns().len()).map(|index| cell(&row, index)).collect();
+                    let values = (0..row.columns().len())
+                        .map(|index| cell(&row, index))
+                        .collect();
                     set.rows.push(values);
                 } else {
                     set.truncated = true;
@@ -475,13 +555,205 @@ pub async fn parse(client: &mut MssqlClient, sql: &str) -> Outcome {
 }
 
 fn finish_set(set: ResultSet, sets: &mut Vec<ResultSet>, messages: &mut Vec<QueryMessage>) {
-    let affected = if set.columns.is_empty() {
-        set.rows_affected
-    } else {
-        set.rows_affected
-    };
-    messages.push(QueryMessage::info(format!("({affected} rows affected)")));
+    messages.push(QueryMessage::affected(set.rows_affected));
     sets.push(set);
+}
+
+async fn execute_counted(client: &mut MssqlClient, sql: &str) -> Outcome {
+    let result = match client.execute(sql, &[]).await {
+        Ok(result) => result,
+        Err(error) => {
+            return Outcome::Failed {
+                message: error.to_string(),
+                drop_connection: false,
+            };
+        }
+    };
+    let counts = result.rows_affected();
+    let mut sets = Vec::new();
+    let mut messages = Vec::new();
+    if counts.is_empty() {
+        messages.push(QueryMessage::info("Commands completed successfully."));
+    } else {
+        for count in counts {
+            messages.push(QueryMessage::affected(*count));
+            sets.push(ResultSet {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                rows_affected: *count,
+                truncated: false,
+            });
+        }
+    }
+    Outcome::Done {
+        response: QueryResponse {
+            result_sets: sets,
+            messages,
+            elapsed_ms: 0,
+        },
+        drop_connection: false,
+    }
+}
+
+fn batch_returns_rows(sql: &str) -> bool {
+    let mut saw_statement = false;
+    for statement in split_statements(sql) {
+        let words = statement_words(&statement);
+        let Some(first) = words.first() else {
+            continue;
+        };
+        saw_statement = true;
+        if matches!(
+            first.as_str(),
+            "SELECT"
+                | "WITH"
+                | "EXEC"
+                | "EXECUTE"
+                | "FETCH"
+                | "OPEN"
+                | "SHOW"
+                | "EXPLAIN"
+                | "TABLE"
+                | "VALUES"
+                | "IF"
+                | "WHILE"
+        ) {
+            return true;
+        }
+        if matches!(first.as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE")
+            && words.iter().any(|word| word == "OUTPUT")
+        {
+            return true;
+        }
+    }
+    !saw_statement
+}
+
+fn split_statements(sql: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '-' && chars.peek() == Some(&'-') {
+            current.push(ch);
+            current.push(chars.next().unwrap_or('-'));
+            for next in chars.by_ref() {
+                current.push(next);
+                if next == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'*') {
+            current.push(ch);
+            current.push(chars.next().unwrap_or('*'));
+            while let Some(next) = chars.next() {
+                current.push(next);
+                if next == '*' && chars.peek() == Some(&'/') {
+                    current.push(chars.next().unwrap_or('/'));
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            current.push(ch);
+            while let Some(next) = chars.next() {
+                current.push(next);
+                if next == ch {
+                    if chars.peek() == Some(&ch) {
+                        current.push(chars.next().unwrap_or(ch));
+                        continue;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '[' {
+            current.push(ch);
+            for next in chars.by_ref() {
+                current.push(next);
+                if next == ']' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == ';' {
+            statements.push(std::mem::take(&mut current));
+            continue;
+        }
+        current.push(ch);
+    }
+    if !current.trim().is_empty() {
+        statements.push(current);
+    }
+    statements
+}
+
+fn statement_words(sql: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        if ch == '-' && chars.peek() == Some(&'-') {
+            chars.next();
+            for next in chars.by_ref() {
+                if next == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            while let Some(next) = chars.next() {
+                if next == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            while let Some(next) = chars.next() {
+                if next == ch {
+                    if chars.peek() == Some(&ch) {
+                        chars.next();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '[' {
+            for next in chars.by_ref() {
+                if next == ']' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '_' || ch.is_ascii_alphanumeric() {
+            let mut word = String::new();
+            word.push(ch);
+            while let Some(next) = chars.peek().copied() {
+                if next == '_' || next.is_ascii_alphanumeric() {
+                    word.push(next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            words.push(word.to_ascii_uppercase());
+        }
+    }
+    words
 }
 
 async fn query_rows(
@@ -505,7 +777,11 @@ fn cell(row: &tiberius::Row, index: usize) -> Option<String> {
     }
 
     try_ty!(&str, |value: &str| value.to_string());
-    try_ty!(bool, |value: bool| if value { "1".into() } else { "0".into() });
+    try_ty!(bool, |value: bool| if value {
+        "1".into()
+    } else {
+        "0".into()
+    });
     try_ty!(i32, |value: i32| value.to_string());
     try_ty!(i64, |value: i64| value.to_string());
     try_ty!(u8, |value: u8| value.to_string());
@@ -519,13 +795,14 @@ fn cell(row: &tiberius::Row, index: usize) -> Option<String> {
     try_ty!(chrono::NaiveDateTime, |value: chrono::NaiveDateTime| {
         value.format("%Y-%m-%d %H:%M:%S%.f").to_string()
     });
-    try_ty!(chrono::NaiveDate, |value: chrono::NaiveDate| value.to_string());
+    try_ty!(chrono::NaiveDate, |value: chrono::NaiveDate| value
+        .to_string());
     try_ty!(chrono::NaiveTime, |value: chrono::NaiveTime| {
         value.format("%H:%M:%S%.f").to_string()
     });
-    try_ty!(chrono::DateTime<chrono::Utc>, |value: chrono::DateTime<chrono::Utc>| {
-        value.to_rfc3339()
-    });
+    try_ty!(chrono::DateTime<chrono::Utc>, |value: chrono::DateTime<
+        chrono::Utc,
+    >| { value.to_rfc3339() });
     try_ty!(&[u8], |bytes: &[u8]| {
         let mut hex = String::from("0x");
         for byte in bytes {
@@ -574,5 +851,35 @@ fn format_type(name: &str, max_length: i32, precision: i32, scale: i32) -> Strin
             }
         }
         _ => name.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::batch_returns_rows;
+
+    #[test]
+    fn plain_writes_keep_their_row_counts() {
+        assert!(!batch_returns_rows(
+            "UPDATE dbo.Lessons SET Title = N'a' WHERE Id = 1"
+        ));
+        assert!(!batch_returns_rows("delete from posts where id = 4"));
+        assert!(!batch_returns_rows(
+            "INSERT INTO posts (title) VALUES ('select me'); UPDATE posts SET title = 'x' WHERE id = 1"
+        ));
+    }
+
+    #[test]
+    fn queries_and_output_still_return_rows() {
+        assert!(batch_returns_rows("SELECT * FROM posts"));
+        assert!(batch_returns_rows(
+            "UPDATE posts SET title = 'a' WHERE id = 1; SELECT id FROM posts"
+        ));
+        assert!(batch_returns_rows(
+            "DELETE FROM posts OUTPUT deleted.id WHERE id = 1"
+        ));
+        assert!(!batch_returns_rows(
+            "UPDATE posts SET note = 'select this' WHERE id = 1"
+        ));
     }
 }

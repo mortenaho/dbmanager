@@ -700,6 +700,18 @@ kbd {
 .history-table tr.bad td:nth-child(4),
 .history-table tr.bad td:nth-child(2) { color: var(--error); }
 .history-detail { height: 250px; display: flex; flex-direction: column; min-height: 0; gap: 6px; }
+.history-backup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: #f3faf4;
+  border: 1px solid #b7dfc3;
+  font-size: 12px;
+}
+.history-backup.done { background: #f7f7f7; border-color: #ddd; }
+.history-backup button { height: 24px; }
 .history-sql {
   margin: 0;
   max-height: 72px;

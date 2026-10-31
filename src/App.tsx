@@ -14,6 +14,7 @@ import {
   loadProfiles,
   parseSql,
   clearHistory,
+  rollbackHistory,
   generateScript,
   logEvent,
   renameObject,
@@ -405,6 +406,8 @@ export default function App() {
         activePane: failed || guard ? "messages" : "results",
       });
       if (guard) showNotice(guard.text.split("\n")[0]);
+      const backedUp = response.messages.find((message) => message.text.startsWith("Backed up rows"));
+      if (backedUp) showNotice(backedUp.text);
     } catch (reason) {
       patchTab(tab.id, {
         running: false,
@@ -644,7 +647,7 @@ export default function App() {
   }
 
   async function clearSavedHistory() {
-    if (!window.confirm("Delete all saved queries, results, and logs?")) return;
+    if (!window.confirm("Delete all saved queries, row backups, results, and logs?")) return;
     try {
       await clearHistory();
       setHistoryVersion((value) => value + 1);
@@ -652,6 +655,21 @@ export default function App() {
     } catch (reason) {
       showNotice(errorText(reason));
     }
+  }
+
+  async function rollbackSaved(detail: HistoryDetail) {
+    const matches = connections.filter(
+      (item) => item.engine === detail.engine && `${item.host}:${item.port}` === detail.server,
+    );
+    const connection = matches.find((item) => item.id === activeTab?.connectionId) ?? matches[0];
+    if (!connection) {
+      throw new Error(`Connect to ${detail.server} before rolling back this change.`);
+    }
+    const response = await rollbackHistory(connection.id, detail.id);
+    setHistoryVersion((value) => value + 1);
+    const failed = response.messages.find((message) => message.level === "error");
+    if (failed) throw new Error(failed.text);
+    showNotice(response.messages[0]?.text ?? "Restored the backed-up rows.");
   }
 
   async function runGenerate(
@@ -1598,6 +1616,7 @@ export default function App() {
           onOpenQuery={(database, sql) => openTab(activeTab?.connectionId ?? connections[0]?.id ?? null, database, sql)}
           onExport={(format, detail: HistoryDetail) => void exportSets(format, detail.resultSets, "history")}
           onClear={() => void clearSavedHistory()}
+          onRollback={(detail) => rollbackSaved(detail)}
         />
       ) : null}
       {settingsOpen ? (

@@ -122,6 +122,10 @@ export function getHistory(id: number): Promise<HistoryDetail> {
   return invoke<HistoryDetail>("get_history", { id });
 }
 
+export function rollbackHistory(connectionId: string, id: number): Promise<QueryResponse> {
+  return invoke<QueryResponse>("rollback_history", { connectionId, id });
+}
+
 export function deleteHistory(id: number): Promise<void> {
   return invoke("delete_history", { id });
 }

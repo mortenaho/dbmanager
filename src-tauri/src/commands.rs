@@ -8,8 +8,8 @@ use uuid::Uuid;
 use crate::ask;
 use crate::history::{self, HistoryDb, QueryRecord};
 use crate::model::{
-    default_database, display_name, ColumnInfo, ColumnRef, ConnectResponse, Credentials, DbObject,
-    EngineKind, Profile, QueryMessage, QueryResponse, ScriptResult,
+    ColumnInfo, ColumnRef, ConnectResponse, Credentials, DbObject, EngineKind, Profile,
+    QueryMessage, QueryResponse, ScriptResult, default_database, display_name,
 };
 use crate::profiles;
 use crate::state::{DbState, Session};
@@ -174,7 +174,14 @@ pub async fn list_columns(
     let session = session(&state, &connection_id).await?;
     let creds = session.creds.clone();
     let mut conn = session.conn.lock().await;
-    crate::db::list_columns(&mut conn, &creds, database.trim(), schema.trim(), table.trim()).await
+    crate::db::list_columns(
+        &mut conn,
+        &creds,
+        database.trim(),
+        schema.trim(),
+        table.trim(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -339,7 +346,10 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
             _ => Err("The file contents are not valid.".into()),
         }
     }
-    let bytes: Vec<u8> = input.bytes().filter(|byte| !byte.is_ascii_whitespace()).collect();
+    let bytes: Vec<u8> = input
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
     let mut end = bytes.len();
     while end > 0 && bytes[end - 1] == b'=' {
         end -= 1;
@@ -409,35 +419,322 @@ pub async fn execute_sql(
             return Err(error);
         }
     };
+    let database = database.trim();
     if let Some(warning) = crate::db::guard::unconditional_write_warning(&sql) {
-        let response = QueryResponse {
-            result_sets: Vec::new(),
-            messages: vec![QueryMessage::warn(warning)],
-            elapsed_ms: 0,
-        };
-        remember(&history, &session.creds, database.trim(), &sql, 0, Ok(&response));
-        return Ok(response);
+        return blocked_write(&history, &session.creds, database, &sql, warning);
     }
+    let plans = match crate::db::backup::plan_writes(session.creds.engine, &sql) {
+        Ok(plans) => plans,
+        Err(message) => return blocked_write(&history, &session.creds, database, &sql, message),
+    };
     let creds = session.creds.clone();
     let started = Instant::now();
     let mut conn = session.conn.lock().await;
-    let database = database.trim();
-    match crate::db::execute(&mut conn, &creds, database, &sql, max_rows.unwrap_or(5_000) as usize).await {
+    if plans.is_empty() {
+        return finish_query(
+            &history,
+            &creds,
+            crate::db::execute(
+                &mut conn,
+                &creds,
+                database,
+                &sql,
+                max_rows.unwrap_or(5_000) as usize,
+            )
+            .await,
+            database,
+            &sql,
+            started,
+            &[],
+        );
+    }
+    let lock_rows = !crate::db::backup::batch_controls_transaction(&sql);
+    if lock_rows {
+        if let Err(error) = crate::db::execute_on(
+            &mut conn,
+            &creds,
+            database,
+            crate::db::backup::begin_sql(creds.engine),
+            1,
+            true,
+        )
+        .await
+        {
+            return blocked_write(
+                &history,
+                &creds,
+                database,
+                &sql,
+                format!(
+                    "Could not start a backup transaction, so the statement was not run. {error}"
+                ),
+            );
+        }
+    }
+    let mut backups = Vec::new();
+    for plan in &plans {
+        match crate::db::capture_backup(&mut conn, &creds, database, plan, lock_rows).await {
+            Ok(backup) => backups.push(backup),
+            Err(error) => {
+                if lock_rows {
+                    let _ = crate::db::execute_on(
+                        &mut conn,
+                        &creds,
+                        database,
+                        crate::db::backup::rollback_sql(creds.engine),
+                        1,
+                        false,
+                    )
+                    .await;
+                }
+                return blocked_write(&history, &creds, database, &sql, error);
+            }
+        }
+    }
+    let executed = match crate::db::execute_on(
+        &mut conn,
+        &creds,
+        database,
+        &sql,
+        max_rows.unwrap_or(5_000) as usize,
+        !lock_rows,
+    )
+    .await
+    {
+        Err(error) => {
+            if lock_rows {
+                if let Err(rollback_error) = crate::db::execute_on(
+                    &mut conn,
+                    &creds,
+                    database,
+                    crate::db::backup::rollback_sql(creds.engine),
+                    1,
+                    false,
+                )
+                .await
+                {
+                    return finish_query(
+                        &history,
+                        &creds,
+                        Err(format!(
+                            "{error}\nAlso failed to undo the backup transaction: {rollback_error}"
+                        )),
+                        database,
+                        &sql,
+                        started,
+                        &[],
+                    );
+                }
+            }
+            return finish_query(&history, &creds, Err(error), database, &sql, started, &[]);
+        }
+        Ok(response) => response,
+    };
+    if lock_rows {
+        if let Err(error) = crate::db::execute_on(
+            &mut conn,
+            &creds,
+            database,
+            crate::db::backup::commit_sql(creds.engine),
+            1,
+            false,
+        )
+        .await
+        {
+            let _ = crate::db::execute_on(
+                &mut conn,
+                &creds,
+                database,
+                crate::db::backup::rollback_sql(creds.engine),
+                1,
+                false,
+            )
+            .await;
+            return finish_query(&history, &creds, Err(error), database, &sql, started, &[]);
+        }
+    }
+    finish_query(
+        &history,
+        &creds,
+        Ok(executed),
+        database,
+        &sql,
+        started,
+        &backups,
+    )
+}
+
+fn finish_query(
+    history: &HistoryDb,
+    creds: &Credentials,
+    executed: Result<QueryResponse, String>,
+    database: &str,
+    sql: &str,
+    started: Instant,
+    backups: &[crate::db::backup::RowBackup],
+) -> Result<QueryResponse, String> {
+    match executed {
         Ok(mut response) => {
+            let note = crate::db::backup::summary(backups);
+            if !note.is_empty() {
+                response.messages.insert(0, QueryMessage::info(note));
+            }
             let elapsed = started.elapsed().as_millis();
             response.elapsed_ms = elapsed;
             response.messages.push(QueryMessage::info(format!(
                 "Completion time: {}",
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
             )));
-            remember(&history, &creds, database, &sql, elapsed, Ok(&response));
+            remember(
+                history,
+                creds,
+                database,
+                sql,
+                elapsed,
+                Ok(&response),
+                backups,
+            );
             Ok(response)
         }
         Err(error) => {
-            remember(&history, &creds, database, &sql, started.elapsed().as_millis(), Err(error.as_str()));
+            remember(
+                history,
+                creds,
+                database,
+                sql,
+                started.elapsed().as_millis(),
+                Err(error.as_str()),
+                &[],
+            );
             Err(error)
         }
     }
+}
+
+fn blocked_write(
+    history: &HistoryDb,
+    creds: &Credentials,
+    database: &str,
+    sql: &str,
+    warning: String,
+) -> Result<QueryResponse, String> {
+    let response = QueryResponse {
+        result_sets: Vec::new(),
+        messages: vec![QueryMessage::warn(warning)],
+        elapsed_ms: 0,
+    };
+    remember(history, creds, database, sql, 0, Ok(&response), &[]);
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn rollback_history(
+    history: State<'_, HistoryDb>,
+    state: State<'_, DbState>,
+    connection_id: String,
+    id: i64,
+) -> Result<QueryResponse, String> {
+    let detail = history.with_conn(|conn| history::get_query(conn, id))?;
+    if detail.backups.is_empty() || detail.backups.iter().all(|backup| backup.rolled_back) {
+        return Err("This history entry has no backup to roll back.".into());
+    }
+    let session = session(&state, &connection_id).await?;
+    let creds = session.creds.clone();
+    let server = format!("{}:{}", creds.host, creds.port);
+    if server != detail.query.server || history::engine_label(creds.engine) != detail.query.engine {
+        return Err(format!(
+            "Connect to {} ({}) before rolling back this change.",
+            detail.query.server, detail.query.engine
+        ));
+    }
+    let loaded = history.with_conn(|conn| history::load_pending_backups(conn, id))?;
+    let images = loaded
+        .iter()
+        .map(|item| crate::db::backup::RowBackup {
+            statement_index: 0,
+            kind: if item.kind == "delete" {
+                crate::db::backup::WriteKind::Delete
+            } else {
+                crate::db::backup::WriteKind::Update
+            },
+            table_sql: item.table_name.clone(),
+            columns: item.columns.clone(),
+            rows: item.rows.clone(),
+            key_columns: item.key_columns.clone(),
+            write_columns: item.write_columns.clone(),
+            identity_insert: item.identity_insert,
+            overriding_system: item.overriding_system,
+        })
+        .collect::<Vec<_>>();
+    let statements = crate::db::backup::restore_statements(creds.engine, &images);
+    let database = detail.query.database_name.clone();
+    let mut conn = session.conn.lock().await;
+    if let Err(error) = crate::db::execute_on(
+        &mut conn,
+        &creds,
+        &database,
+        crate::db::backup::begin_restore_sql(creds.engine),
+        1,
+        true,
+    )
+    .await
+    {
+        return Err(format!("Could not start the rollback. {error}"));
+    }
+    let script = statements.join(";\n");
+    if !script.trim().is_empty() {
+        if let Err(error) =
+            crate::db::execute_on(&mut conn, &creds, &database, &script, 1, false).await
+        {
+            let _ = crate::db::execute_on(
+                &mut conn,
+                &creds,
+                &database,
+                crate::db::backup::rollback_sql(creds.engine),
+                1,
+                false,
+            )
+            .await;
+            return Err(format!(
+                "Rollback failed and the database was left unchanged. {error}"
+            ));
+        }
+    }
+    if let Err(error) = crate::db::execute_on(
+        &mut conn,
+        &creds,
+        &database,
+        crate::db::backup::commit_sql(creds.engine),
+        1,
+        false,
+    )
+    .await
+    {
+        let _ = crate::db::execute_on(
+            &mut conn,
+            &creds,
+            &database,
+            crate::db::backup::rollback_sql(creds.engine),
+            1,
+            false,
+        )
+        .await;
+        return Err(format!("Rollback did not commit. {error}"));
+    }
+    history.with_conn(|conn| history::mark_rolled_back(conn, id))?;
+    let rows: usize = images.iter().map(|image| image.rows.len()).sum();
+    history.note(
+        "info",
+        "rollback",
+        &format!("Rolled back history {id} on {database} ({rows} rows)"),
+    );
+    Ok(QueryResponse {
+        result_sets: Vec::new(),
+        messages: vec![QueryMessage::info(format!(
+            "Restored {rows} backed-up rows in {database}."
+        ))],
+        elapsed_ms: 0,
+    })
 }
 
 #[tauri::command]
@@ -485,21 +782,45 @@ fn remember(
     sql: &str,
     elapsed_ms: u128,
     outcome: Result<&QueryResponse, &str>,
+    backups: &[crate::db::backup::RowBackup],
 ) {
     let server = format!("{}:{}", creds.host, creds.port);
+    let stored = backups
+        .iter()
+        .map(|backup| history::NewBackup {
+            statement_index: backup.statement_index as i64,
+            kind: match backup.kind {
+                crate::db::backup::WriteKind::Update => "update".into(),
+                crate::db::backup::WriteKind::Delete => "delete".into(),
+            },
+            table_name: backup.table_sql.clone(),
+            columns: backup.columns.clone(),
+            rows: backup.rows.clone(),
+            key_columns: backup.key_columns.clone(),
+            write_columns: backup.write_columns.clone(),
+            identity_insert: backup.identity_insert,
+            overriding_system: backup.overriding_system,
+        })
+        .collect::<Vec<_>>();
     match outcome {
         Ok(response) => {
-            let failed = response.messages.iter().any(|message| message.level == "error");
+            let failed = response
+                .messages
+                .iter()
+                .any(|message| message.level == "error");
             let blocked = !failed
                 && response.result_sets.is_empty()
-                && response.messages.iter().any(|message| message.level == "warn");
+                && response
+                    .messages
+                    .iter()
+                    .any(|message| message.level == "warn");
             let error = response
                 .messages
                 .iter()
                 .find(|message| message.level == "error" || (blocked && message.level == "warn"))
                 .map(|message| message.text.as_str())
                 .unwrap_or("");
-            history.remember(QueryRecord {
+            let record = QueryRecord {
                 engine: creds.engine,
                 server: &server,
                 database,
@@ -515,7 +836,12 @@ fn remember(
                 error,
                 messages: &response.messages,
                 sets: &response.result_sets,
-            });
+            };
+            if stored.is_empty() {
+                history.remember(record);
+            } else {
+                history.remember_with(record, &stored);
+            }
         }
         Err(error) => {
             let messages = vec![QueryMessage {
@@ -543,11 +869,20 @@ pub fn list_history(
     needle: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<history::HistoryQuery>, String> {
-    history.with_conn(|conn| history::list_queries(conn, needle.as_deref().unwrap_or(""), limit.unwrap_or(200) as i64))
+    history.with_conn(|conn| {
+        history::list_queries(
+            conn,
+            needle.as_deref().unwrap_or(""),
+            limit.unwrap_or(200) as i64,
+        )
+    })
 }
 
 #[tauri::command]
-pub fn get_history(history: State<'_, HistoryDb>, id: i64) -> Result<history::HistoryDetail, String> {
+pub fn get_history(
+    history: State<'_, HistoryDb>,
+    id: i64,
+) -> Result<history::HistoryDetail, String> {
     history.with_conn(|conn| history::get_query(conn, id))
 }
 
@@ -567,11 +902,22 @@ pub fn list_events(
     needle: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<history::AppEvent>, String> {
-    history.with_conn(|conn| history::list_events(conn, needle.as_deref().unwrap_or(""), limit.unwrap_or(200) as i64))
+    history.with_conn(|conn| {
+        history::list_events(
+            conn,
+            needle.as_deref().unwrap_or(""),
+            limit.unwrap_or(200) as i64,
+        )
+    })
 }
 
 #[tauri::command]
-pub fn log_event(history: State<'_, HistoryDb>, level: String, kind: String, message: String) -> Result<(), String> {
+pub fn log_event(
+    history: State<'_, HistoryDb>,
+    level: String,
+    kind: String,
+    message: String,
+) -> Result<(), String> {
     history.with_conn(|conn| history::log_event(conn, &level, &kind, &message))
 }
 

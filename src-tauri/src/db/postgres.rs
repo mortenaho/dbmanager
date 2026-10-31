@@ -5,8 +5,8 @@ use futures_util::TryStreamExt;
 use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
 
 use crate::model::{
-    quote_pg, ColumnInfo, ColumnRef, Credentials, DbObject, QueryMessage, QueryResponse, ResultSet,
-    HARD_ROW_LIMIT, STORE_ROW_LIMIT,
+    ColumnInfo, ColumnRef, Credentials, DbObject, HARD_ROW_LIMIT, QueryMessage, QueryResponse,
+    ResultSet, STORE_ROW_LIMIT, quote_pg,
 };
 
 use super::Outcome;
@@ -29,10 +29,11 @@ pub async fn connect(creds: &Credentials, database: &str) -> Result<Client, Stri
             .build()
             .map_err(|e| format!("TLS setup failed: {e}"))?;
         let connector = postgres_native_tls::MakeTlsConnector::new(tls);
-        let (client, connection) = tokio::time::timeout(Duration::from_secs(20), config.connect(connector))
-            .await
-            .map_err(|_| "Connection timed out after 20 seconds.".to_string())?
-            .map_err(|e| e.to_string())?;
+        let (client, connection) =
+            tokio::time::timeout(Duration::from_secs(20), config.connect(connector))
+                .await
+                .map_err(|_| "Connection timed out after 20 seconds.".to_string())?
+                .map_err(|e| e.to_string())?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 eprintln!("postgres connection closed: {error}");
@@ -40,10 +41,11 @@ pub async fn connect(creds: &Credentials, database: &str) -> Result<Client, Stri
         });
         Ok(client)
     } else {
-        let (client, connection) = tokio::time::timeout(Duration::from_secs(20), config.connect(NoTls))
-            .await
-            .map_err(|_| "Connection timed out after 20 seconds.".to_string())?
-            .map_err(|e| e.to_string())?;
+        let (client, connection) =
+            tokio::time::timeout(Duration::from_secs(20), config.connect(NoTls))
+                .await
+                .map_err(|_| "Connection timed out after 20 seconds.".to_string())?
+                .map_err(|e| e.to_string())?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 eprintln!("postgres connection closed: {error}");
@@ -62,7 +64,9 @@ pub async fn ensure<'a>(
         let client = connect(creds, database).await?;
         map.insert(database.to_string(), client);
     }
-    Ok(map.get(database).expect("postgres client was just inserted"))
+    Ok(map
+        .get(database)
+        .expect("postgres client was just inserted"))
 }
 
 pub async fn list_databases(client: &Client) -> Result<Vec<String>, String> {
@@ -124,7 +128,8 @@ pub async fn list_objects(client: &Client) -> Result<Vec<DbObject>, String> {
             objects.push(DbObject::plain(
                 row.try_get::<_, String>(0).unwrap_or_default(),
                 row.try_get::<_, String>(1).unwrap_or_default(),
-                row.try_get::<_, String>(2).unwrap_or_else(|_| "function".into()),
+                row.try_get::<_, String>(2)
+                    .unwrap_or_else(|_| "function".into()),
             ));
         }
         objects.retain(|object| !object.name.is_empty());
@@ -239,7 +244,9 @@ pub async fn script_table(
         let default_sql: Option<String> = row.try_get(3).unwrap_or(None);
         columns.push(super::script::ScriptColumn {
             name: row.try_get::<_, String>(0).map_err(|e| e.to_string())?,
-            data_type: row.try_get::<_, String>(1).unwrap_or_else(|_| "text".into()),
+            data_type: row
+                .try_get::<_, String>(1)
+                .unwrap_or_else(|_| "text".into()),
             nullable: !not_null,
             default_sql,
             identity: false,
@@ -333,9 +340,107 @@ fn json_cell(value: Option<&serde_json::Value>) -> Option<String> {
     match value {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::String(text)) => Some(text.clone()),
-        Some(serde_json::Value::Bool(value)) => Some(if *value { "true".into() } else { "false".into() }),
+        Some(serde_json::Value::Bool(value)) => Some(if *value {
+            "true".into()
+        } else {
+            "false".into()
+        }),
         Some(other) => Some(other.to_string()),
     }
+}
+
+pub async fn resolve_backup_table(
+    client: &Client,
+    parts: &[String],
+) -> Result<(String, String), String> {
+    let (schema, table) =
+        match parts {
+            [table] => (String::new(), table.clone()),
+            [schema, table] => (schema.clone(), table.clone()),
+            _ => return Err(
+                "PostgreSQL backups support schema.table names only. The statement was not run."
+                    .into(),
+            ),
+        };
+    let rows = client
+        .query(
+            "SELECT n.nspname::text, c.relname::text
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relname = $2
+               AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+               AND (
+                    ($1 <> '' AND n.nspname = $1)
+                    OR ($1 = '' AND n.nspname = ANY (current_schemas(true)))
+               )
+             ORDER BY array_position(current_schemas(true), n.nspname)
+             LIMIT 1",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        let shown = if schema.is_empty() {
+            table
+        } else {
+            format!("{schema}.{table}")
+        };
+        return Err(format!(
+            "Could not find table {shown} to back it up. The statement was not run."
+        ));
+    }
+    Ok((
+        rows[0].try_get(0).map_err(|e| e.to_string())?,
+        rows[0].try_get(1).map_err(|e| e.to_string())?,
+    ))
+}
+
+pub async fn backup_columns(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<super::backup::BackupColumn>, String> {
+    let rows = client
+        .query(
+            "SELECT a.attname::text,
+                    EXISTS (
+                        SELECT 1 FROM pg_index i
+                        WHERE i.indrelid = a.attrelid
+                          AND i.indisprimary
+                          AND a.attnum = ANY (i.indkey)
+                    ),
+                    CASE a.attidentity WHEN 'a' THEN 'a' WHEN 'd' THEN 'd' ELSE '' END,
+                    CASE WHEN a.attgenerated = 's' THEN 's' ELSE '' END
+             FROM pg_attribute a
+             JOIN pg_class c ON c.oid = a.attrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1
+               AND c.relname = $2
+               AND a.attnum > 0
+               AND NOT a.attisdropped
+             ORDER BY a.attnum",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Err(format!(
+            "Could not read columns for {schema}.{table}. The statement was not run."
+        ));
+    }
+    rows.iter()
+        .map(|row| {
+            let identity: String = row.try_get(2).map_err(|e| e.to_string())?;
+            let generated: String = row.try_get(3).map_err(|e| e.to_string())?;
+            Ok(super::backup::BackupColumn {
+                name: row.try_get(0).map_err(|e| e.to_string())?,
+                primary_key: row.try_get(1).map_err(|e| e.to_string())?,
+                identity: identity == "a" || identity == "d",
+                identity_always: identity == "a",
+                generated: generated == "s",
+            })
+        })
+        .collect()
 }
 
 pub async fn list_columns(
@@ -419,7 +524,10 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Outcome {
                     sets.push(set);
                 }
                 current = Some(ResultSet {
-                    columns: columns.iter().map(|column| column.name().to_string()).collect(),
+                    columns: columns
+                        .iter()
+                        .map(|column| column.name().to_string())
+                        .collect(),
                     rows: Vec::new(),
                     rows_affected: 0,
                     truncated: false,
@@ -454,10 +562,10 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Outcome {
                     } else {
                         set.rows.len() as u64
                     };
-                    messages.push(QueryMessage::info(format!("({shown} rows affected)")));
+                    messages.push(QueryMessage::affected(shown));
                     sets.push(set);
                 } else {
-                    messages.push(QueryMessage::info(format!("({count} rows affected)")));
+                    messages.push(QueryMessage::affected(count));
                     sets.push(ResultSet {
                         columns: Vec::new(),
                         rows: Vec::new(),

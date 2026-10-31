@@ -1,3 +1,4 @@
+pub(crate) mod backup;
 pub(crate) mod guard;
 mod mssql;
 mod mysql;
@@ -7,8 +8,8 @@ mod script;
 use std::collections::HashMap;
 
 use crate::model::{
-    protected_database, require_ident, ColumnInfo, ColumnRef, Credentials, DbObject, EngineKind,
-    QueryResponse, ScriptResult,
+    ColumnInfo, ColumnRef, Credentials, DbObject, EngineKind, QueryResponse, ResultSet,
+    ScriptResult, protected_database, quote_mssql, quote_mysql, quote_pg, require_ident,
 };
 
 pub enum EngineConn {
@@ -141,7 +142,9 @@ pub async fn rename_object(
         "database" => {
             let database = require_ident(database, "Database")?;
             if protected_database(creds.engine, &database) {
-                return Err(format!("`{database}` is a system database and cannot be renamed."));
+                return Err(format!(
+                    "`{database}` is a system database and cannot be renamed."
+                ));
             }
             if database.eq_ignore_ascii_case(&new_name) {
                 return Err("Choose a different name.".into());
@@ -188,11 +191,9 @@ async fn rename_database(
             };
             let client = match postgres::ensure(clients, creds, admin).await {
                 Ok(client) => client,
-                Err(error) if admin != "template1" => {
-                    postgres::ensure(clients, creds, "template1")
-                        .await
-                        .map_err(|_| error)?
-                }
+                Err(error) if admin != "template1" => postgres::ensure(clients, creds, "template1")
+                    .await
+                    .map_err(|_| error)?,
                 Err(error) => return Err(error),
             };
             postgres::rename_database(client, database, new_name).await?;
@@ -294,7 +295,8 @@ pub async fn generate_script(
     if kind == "database" {
         let objects = list_objects(conn, creds, database).await?;
         for object in objects {
-            match script_object(conn, creds, database, &object, include_create, include_data).await {
+            match script_object(conn, creds, database, &object, include_create, include_data).await
+            {
                 Ok((chunk, notes)) => {
                     sql.push_str(&chunk);
                     warnings.extend(notes);
@@ -344,11 +346,14 @@ async fn script_object(
     match object.kind.as_str() {
         "table" => {
             if include_create {
-                sql.push_str(&create_table_sql(conn, creds, database, &object.schema, &object.name).await?);
+                sql.push_str(
+                    &create_table_sql(conn, creds, database, &object.schema, &object.name).await?,
+                );
                 sql.push_str("\n\n");
             }
             if include_data {
-                let identity_insert = mssql_identity(conn, database, &object.schema, &object.name).await;
+                let identity_insert =
+                    mssql_identity(conn, database, &object.schema, &object.name).await;
                 let data = fetch_rows(conn, creds, database, &object.schema, &object.name).await?;
                 if data.truncated {
                     let note = format!(
@@ -375,17 +380,29 @@ async fn script_object(
             if creds.engine == EngineKind::Mssql {
                 sql.push_str("GO\n");
             }
-            sql.push_str(&create_view_sql(conn, creds, database, &object.schema, &object.name).await?);
+            sql.push_str(
+                &create_view_sql(conn, creds, database, &object.schema, &object.name).await?,
+            );
             sql.push_str("\n\n");
             if creds.engine == EngineKind::Mssql {
                 sql.push_str("GO\n\n");
             }
         }
         "procedure" | "function" if include_create => {
-            let body = script_routine(conn, creds, database, &object.schema, &object.name, &object.kind).await?;
+            let body = script_routine(
+                conn,
+                creds,
+                database,
+                &object.schema,
+                &object.name,
+                &object.kind,
+            )
+            .await?;
             match creds.engine {
                 EngineKind::Mssql => sql.push_str(&format!("GO\n{body}\nGO\n\n")),
-                EngineKind::Mysql => sql.push_str(&format!("DELIMITER $$\n{body}\n$$\nDELIMITER ;\n\n")),
+                EngineKind::Mysql => {
+                    sql.push_str(&format!("DELIMITER $$\n{body}\n$$\nDELIMITER ;\n\n"))
+                }
                 EngineKind::Postgres => sql.push_str(&format!("{body};\n\n")),
             }
         }
@@ -425,7 +442,8 @@ async fn create_table_sql(
         }
         EngineConn::Mysql(conn) => mysql::script_create(conn, database, name, "table").await,
         EngineConn::Mssql(client) => {
-            let (columns, primary_key) = mssql::script_table(client, database, schema, name).await?;
+            let (columns, primary_key) =
+                mssql::script_table(client, database, schema, name).await?;
             Ok(script::create_table_sql(
                 EngineKind::Mssql,
                 schema,
@@ -485,6 +503,17 @@ pub async fn execute(
     sql: &str,
     max_rows: usize,
 ) -> Result<QueryResponse, String> {
+    execute_on(conn, creds, database, sql, max_rows, true).await
+}
+
+pub async fn execute_on(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    sql: &str,
+    max_rows: usize,
+    switch_database: bool,
+) -> Result<QueryResponse, String> {
     ensure_open(conn, creds).await?;
     let outcome = match conn {
         EngineConn::Postgres(clients) => {
@@ -492,12 +521,16 @@ pub async fn execute(
             let client = postgres::ensure(clients, creds, database).await?;
             postgres::execute(client, sql, max_rows).await
         }
-        EngineConn::Mysql(conn) => {
-            mysql::use_database(conn, database).await?;
-            mysql::execute(conn, sql, max_rows).await
+        EngineConn::Mysql(inner) => {
+            if switch_database {
+                mysql::use_database(inner, database).await?;
+            }
+            mysql::execute(inner, sql, max_rows).await
         }
         EngineConn::Mssql(client) => {
-            mssql::use_database(client, database).await?;
+            if switch_database {
+                mssql::use_database(client, database).await?;
+            }
             mssql::execute(client, sql, max_rows).await
         }
         EngineConn::Closed => {
@@ -505,6 +538,179 @@ pub async fn execute(
         }
     };
     apply(conn, outcome)
+}
+
+pub async fn capture_backup(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    plan: &backup::WritePlan,
+    lock: bool,
+) -> Result<backup::RowBackup, String> {
+    let sql = backup::snapshot_sql(creds.engine, plan, lock);
+    let response = execute_on(conn, creds, database, &sql, backup::MAX_BACKUP_ROWS, !lock)
+        .await
+        .map_err(|error| {
+            format!(
+                "Could not back up rows before {}. {error}\n\nThe statement was not run.",
+                plan.kind.label()
+            )
+        })?;
+    let set = response
+        .result_sets
+        .into_iter()
+        .find(|set| !set.columns.is_empty())
+        .unwrap_or(ResultSet {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            rows_affected: 0,
+            truncated: false,
+        });
+    if set.truncated || set.rows.len() > backup::MAX_BACKUP_ROWS {
+        return Err(backup::too_many_rows_message(plan.kind, &plan.preview));
+    }
+    if backup::payload_bytes(&set.rows) > backup::MAX_BACKUP_BYTES {
+        return Err(backup::too_large_message(plan.kind, &plan.preview));
+    }
+    let (table_sql, catalog) = backup_target(conn, creds, database, &plan.table_parts).await?;
+    let key_columns = catalog
+        .iter()
+        .filter(|column| column.primary_key)
+        .filter_map(|column| named(&set.columns, &column.name))
+        .collect::<Vec<_>>();
+    if plan.kind == backup::WriteKind::Update && !set.rows.is_empty() && key_columns.is_empty() {
+        return Err(format!(
+            "This UPDATE on {table_sql} cannot be rolled back because the table has no primary key. The statement was not run.\n\n{}",
+            plan.preview
+        ));
+    }
+    if plan.kind == backup::WriteKind::Update {
+        if let Some(column) = key_columns.iter().find(|key| {
+            plan.set_columns
+                .iter()
+                .any(|assigned| assigned.eq_ignore_ascii_case(key))
+        }) {
+            return Err(format!(
+                "This UPDATE changes the primary key column {column}, so a later rollback could not find the rows. The statement was not run.\n\n{}",
+                plan.preview
+            ));
+        }
+    }
+    let write_columns = set
+        .columns
+        .iter()
+        .filter(|name| match plan.kind {
+            backup::WriteKind::Delete => !flagged(&catalog, name, |column| column.generated),
+            backup::WriteKind::Update => {
+                !key_columns.iter().any(|key| key.eq_ignore_ascii_case(name))
+                    && !flagged(&catalog, name, |column| column.generated || column.identity)
+            }
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let identity_insert = creds.engine == EngineKind::Mssql
+        && plan.kind == backup::WriteKind::Delete
+        && write_columns
+            .iter()
+            .any(|name| flagged(&catalog, name, |column| column.identity));
+    let overriding_system = creds.engine == EngineKind::Postgres
+        && plan.kind == backup::WriteKind::Delete
+        && write_columns
+            .iter()
+            .any(|name| flagged(&catalog, name, |column| column.identity_always));
+    Ok(backup::RowBackup {
+        statement_index: plan.statement_index,
+        kind: plan.kind,
+        table_sql,
+        columns: set.columns,
+        rows: set.rows,
+        key_columns,
+        write_columns,
+        identity_insert,
+        overriding_system,
+    })
+}
+
+async fn backup_target(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    parts: &[String],
+) -> Result<(String, Vec<backup::BackupColumn>), String> {
+    match conn {
+        EngineConn::Postgres(clients) => {
+            let database = postgres_db(creds, database);
+            let client = postgres::ensure(clients, creds, database).await?;
+            let (schema, table) = postgres::resolve_backup_table(client, parts).await?;
+            let columns = postgres::backup_columns(client, &schema, &table).await?;
+            Ok((
+                format!("{}.{}", quote_pg(&schema), quote_pg(&table)),
+                columns,
+            ))
+        }
+        EngineConn::Mysql(inner) => {
+            let (schema, table) = match parts {
+                [table] => (database.to_string(), table.clone()),
+                [schema, table] => (schema.clone(), table.clone()),
+                _ => {
+                    return Err("MySQL backups support database.table names only. The statement was not run.".into());
+                }
+            };
+            if schema.is_empty() {
+                return Err("Choose a database before updating or deleting rows. The statement was not run.".into());
+            }
+            let columns = mysql::backup_columns(inner, &schema, &table).await?;
+            Ok((
+                format!("{}.{}", quote_mysql(&schema), quote_mysql(&table)),
+                columns,
+            ))
+        }
+        EngineConn::Mssql(client) => {
+            let (db, schema, table) = match parts {
+                [table] => (database.to_string(), None, table.clone()),
+                [schema, table] => (database.to_string(), Some(schema.clone()), table.clone()),
+                [db, schema, table] => (db.clone(), Some(schema.clone()), table.clone()),
+                _ => {
+                    return Err(
+                        "SQL Server backups support database.schema.table names only. The statement was not run."
+                            .into(),
+                    );
+                }
+            };
+            if db.is_empty() {
+                return Err("Choose a database before updating or deleting rows. The statement was not run.".into());
+            }
+            let (schema_name, table_name, columns) =
+                mssql::backup_columns(client, &db, schema.as_deref(), &table).await?;
+            Ok((
+                format!(
+                    "{}.{}.{}",
+                    quote_mssql(&db),
+                    quote_mssql(&schema_name),
+                    quote_mssql(&table_name)
+                ),
+                columns,
+            ))
+        }
+        EngineConn::Closed => Err("Connection is closed.".into()),
+    }
+}
+
+fn named(columns: &[String], name: &str) -> Option<String> {
+    columns
+        .iter()
+        .find(|column| column.eq_ignore_ascii_case(name))
+        .cloned()
+}
+
+fn flagged(
+    catalog: &[backup::BackupColumn],
+    name: &str,
+    flag: impl Fn(&backup::BackupColumn) -> bool,
+) -> bool {
+    catalog
+        .iter()
+        .any(|column| column.name.eq_ignore_ascii_case(name) && flag(column))
 }
 
 pub async fn parse(

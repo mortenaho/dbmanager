@@ -202,7 +202,9 @@ fn record(frame: &Frame, sql: &str, end: usize, hits: &mut Vec<Hit>) {
 }
 
 fn preview(sql: &str, start: usize, end: usize) -> String {
-    let raw = sql.get(start.min(sql.len())..end.min(sql.len())).unwrap_or("");
+    let raw = sql
+        .get(start.min(sql.len())..end.min(sql.len()))
+        .unwrap_or("");
     let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     let flat = flat.trim().trim_end_matches(';').trim();
     let mut out = String::new();
@@ -285,22 +287,38 @@ fn tokenize(sql: &str) -> Vec<Token> {
             continue;
         }
         if ch == '(' {
-            tokens.push(Token { tok: Tok::Open, start, end: start + ch.len_utf8() });
+            tokens.push(Token {
+                tok: Tok::Open,
+                start,
+                end: start + ch.len_utf8(),
+            });
             line_start = false;
             continue;
         }
         if ch == ')' {
-            tokens.push(Token { tok: Tok::Close, start, end: start + ch.len_utf8() });
+            tokens.push(Token {
+                tok: Tok::Close,
+                start,
+                end: start + ch.len_utf8(),
+            });
             line_start = false;
             continue;
         }
         if ch == ';' {
-            tokens.push(Token { tok: Tok::Semi, start, end: start + ch.len_utf8() });
+            tokens.push(Token {
+                tok: Tok::Semi,
+                start,
+                end: start + ch.len_utf8(),
+            });
             line_start = false;
             continue;
         }
         if ch == ',' {
-            tokens.push(Token { tok: Tok::Comma, start, end: start + ch.len_utf8() });
+            tokens.push(Token {
+                tok: Tok::Comma,
+                start,
+                end: start + ch.len_utf8(),
+            });
             line_start = false;
             continue;
         }
@@ -315,11 +333,19 @@ fn tokenize(sql: &str) -> Vec<Token> {
             }
             let word = sql[start..end].to_string();
             if line_start && eq(&word, "GO") && rest_of_line_empty(&mut chars) {
-                tokens.push(Token { tok: Tok::Semi, start, end });
+                tokens.push(Token {
+                    tok: Tok::Semi,
+                    start,
+                    end,
+                });
                 line_start = true;
                 continue;
             }
-            tokens.push(Token { tok: Tok::Word(word), start, end });
+            tokens.push(Token {
+                tok: Tok::Word(word),
+                start,
+                end,
+            });
             line_start = false;
             continue;
         }
@@ -360,7 +386,11 @@ fn skip_bracket(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) {
     }
 }
 
-fn skip_dollar(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, start: usize, sql: &str) -> bool {
+fn skip_dollar(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+    start: usize,
+    sql: &str,
+) -> bool {
     let tag = dollar_tag(chars, start, sql);
     let Some(tag) = tag else {
         return false;
@@ -382,7 +412,11 @@ fn skip_dollar(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, start
     true
 }
 
-fn dollar_tag(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, start: usize, sql: &str) -> Option<String> {
+fn dollar_tag(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+    start: usize,
+    sql: &str,
+) -> Option<String> {
     let (_, ch) = chars.peek().copied()?;
     if ch == '$' {
         chars.next();
@@ -449,7 +483,9 @@ mod tests {
     fn allows_writes_that_have_a_where_clause() {
         assert!(!blocked("UPDATE users SET active = 0 WHERE id = 1"));
         assert!(!blocked("DELETE FROM logs WHERE created_at < now()"));
-        assert!(!blocked("UPDATE t SET a = 1 WHERE id IN (SELECT id FROM u WHERE id = 2)"));
+        assert!(!blocked(
+            "UPDATE t SET a = 1 WHERE id IN (SELECT id FROM u WHERE id = 2)"
+        ));
         assert!(!blocked("SELECT * FROM users"));
         assert!(!blocked("UPDATE t SET a = 1 WHERE id = 1; SELECT 1"));
     }
@@ -468,7 +504,8 @@ mod tests {
 
     #[test]
     fn blocks_only_the_unsafe_statement_in_a_batch() {
-        let warning = unconditional_write_warning("UPDATE t SET a = 1 WHERE id = 1; DELETE FROM u").unwrap();
+        let warning =
+            unconditional_write_warning("UPDATE t SET a = 1 WHERE id = 1; DELETE FROM u").unwrap();
         assert!(warning.contains("DELETE FROM u"));
         assert!(!warning.contains("SET a = 1 WHERE"));
         assert!(blocked("DELETE FROM t WHERE id = 1\nGO\nDELETE FROM u"));
@@ -477,20 +514,26 @@ mod tests {
 
     #[test]
     fn catches_writes_inside_a_data_modifying_cte() {
-        assert!(blocked("WITH gone AS (DELETE FROM logs RETURNING *) SELECT * FROM gone"));
+        assert!(blocked(
+            "WITH gone AS (DELETE FROM logs RETURNING *) SELECT * FROM gone"
+        ));
         assert!(blocked(
             "WITH one AS (SELECT 1), gone AS (UPDATE users SET active = 0 RETURNING id) SELECT * FROM gone"
         ));
         assert!(!blocked(
             "WITH gone AS (DELETE FROM logs WHERE id = 1 RETURNING *) SELECT * FROM gone"
         ));
-        assert!(!blocked("WITH c AS (SELECT 1) UPDATE users SET active = 0 WHERE id = 1"));
+        assert!(!blocked(
+            "WITH c AS (SELECT 1) UPDATE users SET active = 0 WHERE id = 1"
+        ));
     }
 
     #[test]
     fn explain_analyze_update_without_where_is_blocked() {
         assert!(blocked("EXPLAIN ANALYZE UPDATE users SET active = 0"));
         assert!(!blocked("EXPLAIN SELECT * FROM users"));
-        assert!(!blocked("CREATE PROCEDURE p AS BEGIN UPDATE users SET active = 0 WHERE id = 1; END"));
+        assert!(!blocked(
+            "CREATE PROCEDURE p AS BEGIN UPDATE users SET active = 0 WHERE id = 1; END"
+        ));
     }
 }

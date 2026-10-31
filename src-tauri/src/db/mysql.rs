@@ -4,8 +4,8 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{OptsBuilder, SslOpts, Value};
 
 use crate::model::{
-    parse_row_count, quote_mysql, ColumnInfo, ColumnRef, Credentials, DbObject, QueryMessage, QueryResponse,
-    ResultSet, HARD_ROW_LIMIT, STORE_ROW_LIMIT,
+    ColumnInfo, ColumnRef, Credentials, DbObject, HARD_ROW_LIMIT, QueryMessage, QueryResponse,
+    ResultSet, STORE_ROW_LIMIT, parse_row_count, quote_mysql,
 };
 
 use super::Outcome;
@@ -295,9 +295,17 @@ pub async fn script_create(
     kind: &str,
 ) -> Result<String, String> {
     let sql = if kind == "view" {
-        format!("SHOW CREATE VIEW {}.{}", quote_mysql(database), quote_mysql(name))
+        format!(
+            "SHOW CREATE VIEW {}.{}",
+            quote_mysql(database),
+            quote_mysql(name)
+        )
     } else {
-        format!("SHOW CREATE TABLE {}.{}", quote_mysql(database), quote_mysql(name))
+        format!(
+            "SHOW CREATE TABLE {}.{}",
+            quote_mysql(database),
+            quote_mysql(name)
+        )
     };
     show_create(conn, sql).await
 }
@@ -371,12 +379,52 @@ async fn show_create(conn: &mut mysql_async::Conn, sql: String) -> Result<String
 }
 
 async fn count_rows(conn: &mut mysql_async::Conn, sql: &str, schema: &str) -> Result<i64, String> {
-    let row: Option<mysql_async::Row> = conn.exec_first(sql, (schema,)).await.map_err(|e| e.to_string())?;
+    let row: Option<mysql_async::Row> = conn
+        .exec_first(sql, (schema,))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(row
         .as_ref()
         .and_then(|row| cell(row, 0))
         .and_then(|value| value.parse().ok())
         .unwrap_or(0))
+}
+
+pub async fn backup_columns(
+    conn: &mut mysql_async::Conn,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<super::backup::BackupColumn>, String> {
+    let rows: Vec<mysql_async::Row> = conn
+        .exec(
+            "SELECT column_name, column_key, extra
+             FROM information_schema.columns
+             WHERE table_schema = ? AND table_name = ?
+             ORDER BY ordinal_position",
+            (schema, table),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Err(format!(
+            "Could not find table {schema}.{table} to back it up. The statement was not run."
+        ));
+    }
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let extra = cell(row, 2).unwrap_or_default().to_ascii_lowercase();
+            let key = cell(row, 1).unwrap_or_default();
+            super::backup::BackupColumn {
+                name: cell(row, 0).unwrap_or_default(),
+                primary_key: key.eq_ignore_ascii_case("PRI"),
+                identity: extra.contains("auto_increment"),
+                identity_always: false,
+                generated: extra.contains("stored generated")
+                    || extra.contains("virtual generated"),
+            }
+        })
+        .collect())
 }
 
 pub async fn list_columns(
@@ -468,7 +516,7 @@ pub async fn execute(conn: &mut mysql_async::Conn, sql: &str, max_rows: usize) -
         } else {
             read as u64
         };
-        messages.push(QueryMessage::info(format!("({affected} rows affected)")));
+        messages.push(QueryMessage::affected(affected));
         sets.push(ResultSet {
             columns,
             rows,
@@ -479,7 +527,7 @@ pub async fn execute(conn: &mut mysql_async::Conn, sql: &str, max_rows: usize) -
 
     if sets.is_empty() {
         let affected = result.affected_rows();
-        messages.push(QueryMessage::info(format!("({affected} rows affected)")));
+        messages.push(QueryMessage::affected(affected));
         sets.push(ResultSet {
             columns: Vec::new(),
             rows: Vec::new(),

@@ -33,6 +33,7 @@ pub fn run() {
             commands::read_text_file,
             commands::write_binary_file,
             commands::execute_sql,
+            commands::rollback_history,
             commands::parse_sql,
             commands::load_profiles,
             commands::save_profile,

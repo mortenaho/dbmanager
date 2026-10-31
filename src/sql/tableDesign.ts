@@ -88,15 +88,15 @@ export function parseColumnType(value: string): { dataType: string; length: numb
   return { dataType: trimmed.split("(")[0].trim(), length: 0, precision: 18, scale: 0 };
 }
 
-export function primaryKeyLookupSql(engine: EngineKind, schema: string, table: string): string {
+export function primaryKeyLookupSql(engine: EngineKind, database: string, schema: string, table: string): string {
   const literal = (value: string) => `'${value.split("'").join("''")}'`;
   if (engine === "mssql") {
-    return `SELECT kc.name AS name FROM sys.key_constraints AS kc WHERE kc.type = 'PK' AND kc.parent_object_id = OBJECT_ID(N${literal(`${schema}.${table}`)})`;
+    return `SELECT kc.name AS name FROM ${mssqlSys(database)}.key_constraints AS kc WHERE kc.type = 'PK' AND kc.parent_object_id = OBJECT_ID(${mssqlObjectId(database, schema, table)})`;
   }
   if (engine === "postgres") {
     return `SELECT con.conname AS name FROM pg_constraint AS con JOIN pg_class AS rel ON rel.oid = con.conrelid JOIN pg_namespace AS nsp ON nsp.oid = rel.relnamespace WHERE con.contype = 'p' AND rel.relname = ${literal(table)} AND nsp.nspname = ${literal(schema)}`;
   }
-  return `SELECT constraint_name AS name FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND table_name = ${literal(table)} AND constraint_type = 'PRIMARY KEY'`;
+  return `SELECT constraint_name AS name FROM information_schema.table_constraints WHERE table_schema = ${mysqlSchemaExpr(database)} AND table_name = ${literal(table)} AND constraint_type = 'PRIMARY KEY'`;
 }
 
 export function createTableSql(engine: EngineKind, schema: string, name: string, columns: ColumnDraft[]): string {
@@ -277,40 +277,43 @@ export function uniqueIndexAllowed(engine: EngineKind, kind: string): boolean {
   return value === "clustered" || value === "nonclustered";
 }
 
-export function columnCommentSql(engine: EngineKind, schema: string, table: string): string {
+export function columnCommentSql(engine: EngineKind, database: string, schema: string, table: string): string {
   const tableName = embed(table);
   const schemaName = embed(schema);
   if (engine === "mssql") {
-    return `SELECT c.name, CAST(ep.value AS nvarchar(4000)) FROM sys.columns AS c LEFT JOIN sys.extended_properties AS ep ON ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = N'MS_Description' WHERE c.object_id = OBJECT_ID(${mssqlObjectId(schema, table)})`;
+    const sys = mssqlSys(database);
+    return `SELECT c.name, CAST(ep.value AS nvarchar(4000)) FROM ${sys}.columns AS c LEFT JOIN ${sys}.extended_properties AS ep ON ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = N'MS_Description' WHERE c.object_id = OBJECT_ID(${mssqlObjectId(database, schema, table)})`;
   }
   if (engine === "postgres") {
     return `SELECT a.attname, col_description(a.attrelid, a.attnum) FROM pg_attribute AS a JOIN pg_class AS rel ON rel.oid = a.attrelid JOIN pg_namespace AS nsp ON nsp.oid = rel.relnamespace WHERE nsp.nspname = '${schemaName}' AND rel.relname = '${tableName}' AND a.attnum > 0 AND NOT a.attisdropped`;
   }
-  return `SELECT COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${tableName}' ORDER BY ORDINAL_POSITION`;
+  return `SELECT COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ${mysqlSchemaExpr(database)} AND TABLE_NAME = '${tableName}' ORDER BY ORDINAL_POSITION`;
 }
 
-export function indexCatalogSql(engine: EngineKind, schema: string, table: string): string {
+export function indexCatalogSql(engine: EngineKind, database: string, schema: string, table: string): string {
   const tableName = embed(table);
   const schemaName = embed(schema);
   if (engine === "mssql") {
-    return `SELECT i.name, CAST(i.is_unique AS int), i.type_desc, col.name FROM sys.indexes AS i INNER JOIN sys.index_columns AS ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0 INNER JOIN sys.columns AS col ON col.object_id = ic.object_id AND col.column_id = ic.column_id WHERE i.object_id = OBJECT_ID(${mssqlObjectId(schema, table)}) AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 AND i.type IN (1, 2) ORDER BY i.name, ic.key_ordinal`;
+    const sys = mssqlSys(database);
+    return `SELECT i.name, CAST(i.is_unique AS int), i.type_desc, col.name FROM ${sys}.indexes AS i INNER JOIN ${sys}.index_columns AS ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0 INNER JOIN ${sys}.columns AS col ON col.object_id = ic.object_id AND col.column_id = ic.column_id WHERE i.object_id = OBJECT_ID(${mssqlObjectId(database, schema, table)}) AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 AND i.type IN (1, 2) ORDER BY i.name, ic.key_ordinal`;
   }
   if (engine === "postgres") {
-    return `SELECT ic.relname, ix.indisunique, am.amname, a.attname FROM pg_index AS ix JOIN pg_class AS t ON t.oid = ix.indrelid JOIN pg_namespace AS n ON n.oid = t.relnamespace JOIN pg_class AS ic ON ic.oid = ix.indexrelid JOIN pg_am AS am ON am.oid = ic.relam JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON k.attnum > 0 JOIN pg_attribute AS a ON a.attrelid = t.oid AND a.attnum = k.attnum WHERE n.nspname = '${schemaName}' AND t.relname = '${tableName}' AND NOT ix.indisprimary AND NOT EXISTS (SELECT 1 FROM pg_constraint AS con WHERE con.conindid = ix.indexrelid) ORDER BY ic.relname, k.ord`;
+    return `SELECT ic.relname, ix.indisunique, am.amname, a.attname FROM pg_index AS ix JOIN pg_class AS t ON t.oid = ix.indrelid JOIN pg_namespace AS n ON n.oid = t.relnamespace JOIN pg_class AS ic ON ic.oid = ix.indexrelid JOIN pg_am AS am ON am.oid = ic.relam JOIN LATERAL unnest(ix.indkey::smallint[]) WITH ORDINALITY AS k(attnum, ord) ON k.attnum > 0 JOIN pg_attribute AS a ON a.attrelid = t.oid AND a.attnum = k.attnum WHERE n.nspname = '${schemaName}' AND t.relname = '${tableName}' AND NOT ix.indisprimary AND NOT EXISTS (SELECT 1 FROM pg_constraint AS con WHERE con.conindid = ix.indexrelid) ORDER BY ic.relname, k.ord`;
   }
-  return `SELECT INDEX_NAME, CASE WHEN NON_UNIQUE = 0 THEN 1 ELSE 0 END, INDEX_TYPE, COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${tableName}' AND INDEX_NAME <> 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX`;
+  return `SELECT INDEX_NAME, CASE WHEN NON_UNIQUE = 0 THEN 1 ELSE 0 END, INDEX_TYPE, COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ${mysqlSchemaExpr(database)} AND TABLE_NAME = '${tableName}' AND INDEX_NAME <> 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX`;
 }
 
-export function relationCatalogSql(engine: EngineKind, schema: string, table: string): string {
+export function relationCatalogSql(engine: EngineKind, database: string, schema: string, table: string): string {
   const tableName = embed(table);
   const schemaName = embed(schema);
   if (engine === "mssql") {
-    return `SELECT fk.name, pc.name, rs.name, rt.name, rc.name, REPLACE(fk.delete_referential_action_desc, '_', ' '), REPLACE(fk.update_referential_action_desc, '_', ' ') FROM sys.foreign_keys AS fk INNER JOIN sys.foreign_key_columns AS fkc ON fkc.constraint_object_id = fk.object_id INNER JOIN sys.columns AS pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id INNER JOIN sys.columns AS rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id INNER JOIN sys.tables AS rt ON rt.object_id = fk.referenced_object_id INNER JOIN sys.schemas AS rs ON rs.schema_id = rt.schema_id WHERE fk.parent_object_id = OBJECT_ID(${mssqlObjectId(schema, table)}) ORDER BY fk.name, fkc.constraint_column_id`;
+    const sys = mssqlSys(database);
+    return `SELECT fk.name, pc.name, rs.name, rt.name, rc.name, REPLACE(fk.delete_referential_action_desc, '_', ' '), REPLACE(fk.update_referential_action_desc, '_', ' ') FROM ${sys}.foreign_keys AS fk INNER JOIN ${sys}.foreign_key_columns AS fkc ON fkc.constraint_object_id = fk.object_id INNER JOIN ${sys}.columns AS pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id INNER JOIN ${sys}.columns AS rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id INNER JOIN ${sys}.tables AS rt ON rt.object_id = fk.referenced_object_id INNER JOIN ${sys}.schemas AS rs ON rs.schema_id = rt.schema_id WHERE fk.parent_object_id = OBJECT_ID(${mssqlObjectId(database, schema, table)}) ORDER BY fk.name, fkc.constraint_column_id`;
   }
   if (engine === "postgres") {
-    return `SELECT con.conname, src.attname, tn.nspname, tt.relname, dst.attname, con.confdeltype, con.confupdtype FROM pg_constraint AS con JOIN pg_class AS rel ON rel.oid = con.conrelid JOIN pg_namespace AS nsp ON nsp.oid = rel.relnamespace JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS cols(src, dst, ord) ON true JOIN pg_attribute AS src ON src.attrelid = rel.oid AND src.attnum = cols.src JOIN pg_class AS tt ON tt.oid = con.confrelid JOIN pg_namespace AS tn ON tn.oid = tt.relnamespace JOIN pg_attribute AS dst ON dst.attrelid = tt.oid AND dst.attnum = cols.dst WHERE con.contype = 'f' AND nsp.nspname = '${schemaName}' AND rel.relname = '${tableName}' ORDER BY con.conname, cols.ord`;
+    return `SELECT con.conname, src.attname, tn.nspname, tt.relname, dst.attname, con.confdeltype, con.confupdtype FROM pg_constraint AS con JOIN pg_class AS rel ON rel.oid = con.conrelid JOIN pg_namespace AS nsp ON nsp.oid = rel.relnamespace JOIN LATERAL generate_subscripts(con.conkey, 1) AS ord(i) ON true JOIN pg_attribute AS src ON src.attrelid = rel.oid AND src.attnum = con.conkey[ord.i] JOIN pg_class AS tt ON tt.oid = con.confrelid JOIN pg_namespace AS tn ON tn.oid = tt.relnamespace JOIN pg_attribute AS dst ON dst.attrelid = tt.oid AND dst.attnum = con.confkey[ord.i] WHERE con.contype = 'f' AND nsp.nspname = '${schemaName}' AND rel.relname = '${tableName}' ORDER BY con.conname, ord.i`;
   }
-  return `SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, IFNULL(k.REFERENCED_TABLE_SCHEMA, ''), k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.DELETE_RULE, r.UPDATE_RULE FROM information_schema.KEY_COLUMN_USAGE AS k INNER JOIN information_schema.REFERENTIAL_CONSTRAINTS AS r ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME WHERE k.TABLE_SCHEMA = DATABASE() AND k.TABLE_NAME = '${tableName}' AND k.REFERENCED_TABLE_NAME IS NOT NULL ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION`;
+  return `SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, IFNULL(k.REFERENCED_TABLE_SCHEMA, ''), k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.DELETE_RULE, r.UPDATE_RULE FROM information_schema.KEY_COLUMN_USAGE AS k INNER JOIN information_schema.REFERENTIAL_CONSTRAINTS AS r ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME WHERE k.TABLE_SCHEMA = ${mysqlSchemaExpr(database)} AND k.TABLE_NAME = '${tableName}' AND k.REFERENCED_TABLE_NAME IS NOT NULL ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION`;
 }
 
 export function parseComments(rows: Array<Array<string | null>>): Map<string, string> {
@@ -615,7 +618,19 @@ function embed(value: string): string {
   return value.split("'").join("''");
 }
 
-function mssqlObjectId(schema: string, table: string): string {
-  const bracket = (value: string) => `[${value.split("]").join("]]")}]`;
-  return `N'${embed(`${bracket(schema)}.${bracket(table)}`)}'`;
+function mssqlSys(database: string): string {
+  const name = database.trim();
+  return name ? `${quoteIdent("mssql", name)}.sys` : "sys";
+}
+
+function mssqlObjectId(database: string, schema: string, table: string): string {
+  const parts = [schema, table];
+  const name = database.trim();
+  if (name) parts.unshift(name);
+  return `N'${embed(parts.map((part) => quoteIdent("mssql", part)).join("."))}'`;
+}
+
+function mysqlSchemaExpr(database: string): string {
+  const name = database.trim();
+  return name ? `'${embed(name)}'` : "DATABASE()";
 }

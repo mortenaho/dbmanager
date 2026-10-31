@@ -77,7 +77,11 @@ pub struct DbObject {
 }
 
 impl DbObject {
-    pub fn plain(schema: impl Into<String>, name: impl Into<String>, kind: impl Into<String>) -> Self {
+    pub fn plain(
+        schema: impl Into<String>,
+        name: impl Into<String>,
+        kind: impl Into<String>,
+    ) -> Self {
         Self {
             schema: schema.into(),
             name: name.into(),
@@ -91,7 +95,10 @@ impl DbObject {
 pub fn parse_row_count(value: Option<String>) -> Option<i64> {
     let text = value?;
     let head = text.trim().split(['.', 'e', 'E']).next().unwrap_or("");
-    let digits: String = head.chars().filter(|ch| ch.is_ascii_digit() || *ch == '-').collect();
+    let digits: String = head
+        .chars()
+        .filter(|ch| ch.is_ascii_digit() || *ch == '-')
+        .collect();
     if digits.is_empty() || digits == "-" {
         return None;
     }
@@ -146,6 +153,11 @@ impl QueryMessage {
             level: "warn".into(),
             text: text.into(),
         }
+    }
+
+    pub fn affected(count: u64) -> Self {
+        let noun = if count == 1 { "row" } else { "rows" };
+        Self::info(format!("({count} {noun} affected)"))
     }
 }
 

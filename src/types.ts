@@ -95,11 +95,22 @@ export type HistoryQuery = {
   error: string;
   elapsedMs: number;
   rowCount: number;
+  backupRows: number;
+  rollbackCount: number;
+};
+
+export type HistoryBackup = {
+  statementIndex: number;
+  kind: string;
+  tableName: string;
+  rowCount: number;
+  rolledBack: boolean;
 };
 
 export type HistoryDetail = HistoryQuery & {
   messages: QueryMessage[];
   resultSets: ResultSet[];
+  backups: HistoryBackup[];
 };
 
 export type AppEvent = {

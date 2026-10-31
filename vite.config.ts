@@ -7,6 +7,12 @@ const host = (globalThis as { process?: { env?: Record<string, string | undefine
 export default defineConfig(() => ({
   plugins: [react()],
   clearScreen: false,
+  worker: {
+    format: "es" as const,
+  },
+  optimizeDeps: {
+    exclude: ["monaco-editor"],
+  },
   server: {
     port: 1420,
     strictPort: true,

@@ -21,6 +21,7 @@ const ROW_HEIGHT = 22;
 
 export function ResultsPane({ resultSets, messages, activePane, onPane, onExport }: Props) {
   const grids = resultSets.filter((set) => set.columns.length > 0);
+  const writes = resultSets.filter((set) => set.columns.length === 0);
   const hasError = messages.some((message) => message.level === "error");
   const hasWarn = !hasError && messages.some((message) => message.level === "warn");
 
@@ -59,9 +60,28 @@ export function ResultsPane({ resultSets, messages, activePane, onPane, onExport
             ))}
           </div>
         ) : grids.length === 0 ? (
-          <div className="empty-results">The statement did not return a result set. See Messages for details.</div>
+          <div className="messages">
+            {messages.length === 0 ? (
+              <div className="empty-results">The statement did not return a result set.</div>
+            ) : (
+              messages.map((message, index) => (
+                <div key={index} className={`msg ${message.level}`}>
+                  {message.text}
+                </div>
+              ))
+            )}
+          </div>
         ) : (
-          grids.map((set, index) => <ResultGrid key={index} set={set} index={index} total={grids.length} />)
+          <>
+            {writes.map((set, index) => (
+              <div key={`affected-${index}`} className="affected">
+                {affectedText(set.rowsAffected)}
+              </div>
+            ))}
+            {grids.map((set, index) => (
+              <ResultGrid key={index} set={set} index={index} total={grids.length} />
+            ))}
+          </>
         )}
       </div>
     </div>
@@ -507,7 +527,7 @@ function ResultGrid({ set, index, total }: { set: ResultSet; index: number; tota
         </div>
       </div>
       <div className="affected">
-        ({set.rowsAffected.toLocaleString()} rows affected)
+        {affectedText(set.rowsAffected)}
         {note ? <span className="copy-note">{note}</span> : null}
       </div>
       {menu ? (
@@ -529,6 +549,11 @@ function ResultGrid({ set, index, total }: { set: ResultSet; index: number; tota
       ) : null}
     </div>
   );
+}
+
+function affectedText(count: number): string {
+  const noun = count === 1 ? "row" : "rows";
+  return `(${count.toLocaleString()} ${noun} affected)`;
 }
 
 function pickedCells(set: ResultSet, selection: Selection): { rows: number[]; cols: number[] } {

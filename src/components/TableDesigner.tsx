@@ -82,10 +82,19 @@ export function TableDesigner(props: {
       try {
         const columns = await listColumns(props.connectionId, props.database, props.schema, props.name);
         if (cancel) return;
+        let catalogError = "";
+        const read = async (sql: string) => {
+          try {
+            return await readCatalog(props.connectionId, props.database, sql);
+          } catch (reason) {
+            if (!catalogError) catalogError = errorText(reason);
+            return [];
+          }
+        };
         const [commentRows, indexRows, relationRows] = await Promise.all([
-          readCatalog(props.connectionId, props.database, columnCommentSql(props.engine, props.schema, props.name)).catch(() => []),
-          readCatalog(props.connectionId, props.database, indexCatalogSql(props.engine, props.schema, props.name)).catch(() => []),
-          readCatalog(props.connectionId, props.database, relationCatalogSql(props.engine, props.schema, props.name)).catch(() => []),
+          read(columnCommentSql(props.engine, props.database, props.schema, props.name)),
+          read(indexCatalogSql(props.engine, props.database, props.schema, props.name)),
+          read(relationCatalogSql(props.engine, props.database, props.schema, props.name)),
         ]);
         if (cancel) return;
         const comments = parseComments(commentRows);
@@ -106,7 +115,7 @@ export function TableDesigner(props: {
         setIndexId(loadedIndexes[0]?.key ?? "");
         setRelationId(loadedRelations[0]?.key ?? "");
         setSelected(next[0]?.key ?? "");
-        setError("");
+        setError(catalogError);
       } catch (reason) {
         if (!cancel) setError(errorText(reason));
       }
@@ -315,7 +324,7 @@ export function TableDesigner(props: {
       let constraint = "";
       const keysChanged = !creating && pkList(previous) !== pkList(columns);
       if (keysChanged) {
-        const lookup = await executeSql(props.connectionId, props.database, primaryKeyLookupSql(props.engine, schemaName, props.name), 20);
+        const lookup = await executeSql(props.connectionId, props.database, primaryKeyLookupSql(props.engine, props.database, schemaName, props.name), 20);
         const failed = lookup.messages.find((message) => message.level === "error");
         if (failed) throw new Error(failed.text);
         constraint = lookup.resultSets[0]?.rows[0]?.[0] ?? "";
@@ -419,11 +428,11 @@ export function TableDesigner(props: {
           </button>
           <button type="button" className={pane === "index" ? "active" : ""} onClick={() => setPane("index")}>
             <UniqueIcon size={14} />
-            Indexes
+            Indexes{indexes.length ? ` (${indexes.length})` : ""}
           </button>
           <button type="button" className={pane === "relation" ? "active" : ""} onClick={() => setPane("relation")}>
             <LinkIcon size={14} />
-            Relations
+            Relations{relations.length ? ` (${relations.length})` : ""}
           </button>
         </div>
         {pane === "index" ? (
@@ -814,7 +823,8 @@ async function readCatalog(connectionId: string, database: string, sql: string):
   const response = await executeSql(connectionId, database, sql, 5000);
   const failed = response.messages.find((message) => message.level === "error");
   if (failed) throw new Error(failed.text);
-  return response.resultSets[0]?.rows ?? [];
+  const set = response.resultSets.find((item) => item.rows.length > 0) ?? response.resultSets[0];
+  return set?.rows ?? [];
 }
 
 function indexRow(index: IndexDraft): IndexRow {

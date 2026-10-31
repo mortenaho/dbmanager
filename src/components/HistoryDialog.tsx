@@ -11,9 +11,10 @@ type Props = {
   onOpenQuery: (database: string, sql: string) => void;
   onExport: (format: "xlsx" | "json", detail: HistoryDetail) => void;
   onClear: () => void;
+  onRollback: (detail: HistoryDetail) => Promise<void>;
 };
 
-export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, onExport, onClear }: Props) {
+export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, onExport, onClear, onRollback }: Props) {
   const [tab, setTab] = useState<"queries" | "log">("queries");
   const [filter, setFilter] = useState("");
   const [queries, setQueries] = useState<HistoryQuery[]>([]);
@@ -22,6 +23,7 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
   const [detail, setDetail] = useState<HistoryDetail | null>(null);
   const [error, setError] = useState("");
   const [pane, setPane] = useState<"results" | "messages">("results");
+  const [rolling, setRolling] = useState(false);
 
   useEffect(() => {
     let cancel = false;
@@ -69,7 +71,22 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
     return () => {
       cancel = true;
     };
-  }, [tab, selectedId]);
+  }, [tab, selectedId, version]);
+
+  const canRollback = detail?.backups.some((backup) => !backup.rolledBack) ?? false;
+
+  async function rollback() {
+    if (!detail || !canRollback) return;
+    setRolling(true);
+    setError("");
+    try {
+      await onRollback(detail);
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setRolling(false);
+    }
+  }
 
   async function removeSelected() {
     if (selectedId == null) return;
@@ -142,6 +159,7 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
                       <th>Server</th>
                       <th>Database</th>
                       <th>Rows</th>
+                      <th>Backup</th>
                       <th>SQL</th>
                     </tr>
                   </thead>
@@ -158,6 +176,7 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
                         </td>
                         <td>{item.databaseName}</td>
                         <td>{item.rowCount.toLocaleString()}</td>
+                        <td>{item.rollbackCount > 0 ? "Yes" : item.backupRows > 0 ? "Done" : ""}</td>
                         <td>{preview(item.sql)}</td>
                       </tr>
                     ))}
@@ -168,6 +187,14 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
                 {detail ? (
                   <>
                     <pre className="history-sql">{detail.sql}</pre>
+                    {detail.backups.length > 0 ? (
+                      <div className={canRollback ? "history-backup" : "history-backup done"}>
+                        <span>{backupText(detail)}</span>
+                        <button type="button" disabled={!canRollback || rolling} onClick={() => void rollback()}>
+                          {rolling ? "Rolling back..." : canRollback ? "Roll back" : "Rolled back"}
+                        </button>
+                      </div>
+                    ) : null}
                     <div className="history-results">
                       <ResultsPane
                         resultSets={detail.resultSets}
@@ -206,6 +233,16 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
       </div>
     </div>
   );
+}
+
+function backupText(detail: HistoryDetail): string {
+  return detail.backups
+    .map((backup) => {
+      const kind = backup.kind === "delete" ? "DELETE" : "UPDATE";
+      const state = backup.rolledBack ? "rolled back" : "ready";
+      return `${kind} ${backup.tableName} (${backup.rowCount.toLocaleString()} rows, ${state})`;
+    })
+    .join("; ");
 }
 
 function formatWhen(value: string): string {
