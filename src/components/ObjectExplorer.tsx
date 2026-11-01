@@ -332,8 +332,8 @@ export function ObjectExplorer({
       openMenu(event, [
         { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
         { label: "New Table", icon: <NewTableIcon />, action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), "") },
-        { label: "Generate Scripts", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, null, "schema") },
-        { label: "Backup Database", icon: <BackupIcon />, action: () => onGenerateScript(connection.id, database, null, "backup") },
+        { label: "Generate Scripts...", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, null, "schema") },
+        { label: "Backup Database...", icon: <BackupIcon />, action: () => onGenerateScript(connection.id, database, null, "backup") },
         { label: "Rename", icon: <RenameIcon />, action: () => onRenameDatabase(connection.id, database) },
         { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
       ]);
@@ -384,6 +384,11 @@ export function ObjectExplorer({
                   label: "Script as CREATE and INSERT",
                   icon: <ScriptBothIcon />,
                   action: () => onGenerateScript(connection.id, database, object, "both"),
+                },
+                {
+                  label: "Generate Script...",
+                  icon: <ScriptIcon />,
+                  action: () => onGenerateScript(connection.id, database, object, "schema"),
                 },
                 { label: "Rename", icon: <RenameIcon />, action: () => onRenameTable(connection.id, database, object.schema, object.name) },
                 { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },

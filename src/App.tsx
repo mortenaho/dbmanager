@@ -7,6 +7,7 @@ import {
   connectServer,
   disconnectServer,
   executeSql,
+  cancelSql,
   askSql,
   listAllColumns,
   listDatabases,
@@ -48,15 +49,18 @@ import {
   JsonIcon,
   KeyboardIcon,
   NewQueryIcon,
+  OpenIcon,
   OptionsIcon,
   PlayIcon,
   PlugIcon,
   MoonIcon,
   ScriptIcon,
+  StopIcon,
   SunIcon,
 } from "./components/Icons";
 import { ObjectExplorer } from "./components/ObjectExplorer";
 import { RenameDialog } from "./components/RenameDialog";
+import { ScriptDialog, type ScriptGenerateOptions } from "./components/ScriptDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ResultsPane } from "./components/ResultsPane";
 import {
@@ -87,6 +91,8 @@ import {
   type QueryTab,
   type ResultSet,
 } from "./types";
+
+const SCRIPT_FILE_LIMIT = 80_000_000;
 
 type TableDesignDoc = {
   id: string;
@@ -134,8 +140,16 @@ export default function App() {
   const [filter, setFilter] = useState("");
   const [context, setContext] = useState<{ connectionId: string; database: string } | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
+  const [scriptJob, setScriptJob] = useState<{
+    connectionId: string;
+    database: string;
+    object: DbObject | null;
+    preset: "schema" | "backup" | "custom";
+  } | null>(null);
   const [explorerReload, setExplorerReload] = useState(0);
   const [notice, setNotice] = useState("");
+  const [clock, setClock] = useState(0);
+  const [dropActive, setDropActive] = useState(false);
   const counter = useRef(0);
   const tabsRef = useRef(tabs);
   const activeRef = useRef(activeTabId);
@@ -147,6 +161,7 @@ export default function App() {
   const designRef = useRef(false);
   const tableDesignRef = useRef<string | null>(null);
   const editors = useRef(new Map<string, Parameters<OnMount>[0]>());
+  const runTokens = useRef(new Map<string, number>());
   detailsActiveRef.current = detailsActive;
   detailsRef.current = details;
   designActiveRef.current = designActive;
@@ -200,6 +215,12 @@ export default function App() {
   }, [tabs, activeTabId, connections, designActive, tableDesignId, tableDesigns]);
 
   useEffect(() => {
+    if (!tabs.some((tab) => tab.running)) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 200);
+    return () => window.clearInterval(timer);
+  }, [tabs]);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (settingsOpen) setSettingsOpen(false);
@@ -207,7 +228,12 @@ export default function App() {
         else if (aboutOpen) setAboutOpen(false);
         else if (historyOpen) setHistoryOpen(false);
         else if (rename) setRename(null);
+        else if (scriptJob) setScriptJob(null);
         else if (connectOpen) setConnectOpen(false);
+        else if (tabsRef.current.some((tab) => tab.id === activeRef.current && tab.running)) {
+          event.preventDefault();
+          void cancelRef.current();
+        }
         return;
       }
       if (event.key === "F1") {
@@ -215,8 +241,13 @@ export default function App() {
         setHelpOpen((open) => !open);
         return;
       }
-      if (connectOpen || aboutOpen || rename || historyOpen || settingsOpen || helpOpen) return;
+      if (connectOpen || aboutOpen || rename || scriptJob || historyOpen || settingsOpen || helpOpen) return;
       const typing = event.target instanceof HTMLElement && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA");
+      if ((event.altKey && (event.key === "Pause" || event.key === "Cancel" || event.code === "Pause")) || ((event.ctrlKey || event.metaKey) && event.key === "Break")) {
+        event.preventDefault();
+        void cancelRef.current();
+        return;
+      }
       if (event.key === "F5" && event.ctrlKey) {
         event.preventDefault();
         void parseRef.current();
@@ -239,7 +270,70 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [connectOpen, aboutOpen, helpOpen, rename, historyOpen, settingsOpen]);
+  }, [connectOpen, aboutOpen, helpOpen, rename, scriptJob, historyOpen, settingsOpen]);
+
+  useEffect(() => {
+    const isScriptPath = (path: string) => /\.(sql|txt|pgsql|mysql|mssql)$/i.test(path);
+    const tauri = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    if (tauri) {
+      void (async () => {
+        try {
+          const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+          if (disposed) return;
+          unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+            if (event.payload.type === "enter") {
+              setDropActive(event.payload.paths.some(isScriptPath));
+            } else if (event.payload.type === "drop") {
+              setDropActive(false);
+              for (const path of event.payload.paths) {
+                if (isScriptPath(path)) void openScriptFromPath(path);
+              }
+            } else if (event.payload.type === "leave") {
+              setDropActive(false);
+            }
+          });
+        } catch {
+          // Fall through to HTML5 handlers if the webview API is unavailable.
+        }
+      })();
+    }
+
+    const onDragOver = (event: DragEvent) => {
+      if (tauri || ![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+      event.preventDefault();
+      setDropActive(true);
+    };
+    const onDragLeave = (event: DragEvent) => {
+      if (tauri || event.relatedTarget) return;
+      setDropActive(false);
+    };
+    const onDrop = (event: DragEvent) => {
+      if (tauri || ![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+      event.preventDefault();
+      setDropActive(false);
+      const files = [...(event.dataTransfer?.files ?? [])];
+      for (const file of files) {
+        if (!isScriptPath(file.name)) continue;
+        void file
+          .text()
+          .then((contents) => openScriptContents(file.name, contents))
+          .catch((reason) => showNotice(errorText(reason)));
+      }
+    };
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
 
   function makeTab(connectionId: string | null, database: string, sql = "", title = ""): QueryTab {
     const custom = title.trim();
@@ -254,6 +348,7 @@ export default function App() {
       messages: [],
       elapsedMs: null,
       running: false,
+      runStartedAt: null,
       activePane: "results",
       line: 1,
       column: 1,
@@ -389,6 +484,36 @@ export default function App() {
     setTabs((current) => current.map((tab) => (tab.id === id ? { ...tab, ...patch } : tab)));
   }
 
+  function nextRunToken(tabId: string) {
+    const token = (runTokens.current.get(tabId) ?? 0) + 1;
+    runTokens.current.set(tabId, token);
+    return token;
+  }
+
+  function isCurrentRun(tabId: string, token: number) {
+    return runTokens.current.get(tabId) === token;
+  }
+
+  async function cancelQuery() {
+    const tab = tabsRef.current.find((item) => item.id === activeRef.current);
+    if (!tab?.running || !tab.connectionId) return;
+    nextRunToken(tab.id);
+    const started = tab.runStartedAt ?? Date.now();
+    try {
+      await cancelSql(tab.connectionId);
+    } catch {
+      // The local token already abandons the in-flight result.
+    }
+    patchTab(tab.id, {
+      running: false,
+      runStartedAt: null,
+      resultSets: [],
+      elapsedMs: Math.round(Date.now() - started),
+      activePane: "messages",
+      messages: [{ level: "info", text: "Query was cancelled." }],
+    });
+  }
+
   async function runQuery() {
     if (detailsActiveRef.current || designActiveRef.current || tableDesignRef.current) return;
     const tab = tabsRef.current.find((item) => item.id === activeRef.current);
@@ -398,10 +523,19 @@ export default function App() {
       return;
     }
     const target = executionSql(editors.current.get(tab.id), tab.sql);
-    patchTab(tab.id, { running: true, messages: [], resultSets: [], activePane: "results" });
-    const started = performance.now();
+    const token = nextRunToken(tab.id);
+    const started = Date.now();
+    patchTab(tab.id, {
+      running: true,
+      runStartedAt: started,
+      messages: [],
+      resultSets: [],
+      elapsedMs: 0,
+      activePane: "results",
+    });
     try {
       const response = await executeSql(tab.connectionId, tab.database, target.sql);
+      if (!isCurrentRun(tab.id, token)) return;
       if (target.selected) {
         response.messages = [{ level: "info", text: "Executed the selected text." }, ...response.messages];
       }
@@ -410,6 +544,7 @@ export default function App() {
       const guard = hasGrid ? undefined : response.messages.find((message) => message.level === "warn");
       patchTab(tab.id, {
         running: false,
+        runStartedAt: null,
         resultSets: response.resultSets,
         messages: response.messages,
         elapsedMs: response.elapsedMs,
@@ -419,12 +554,16 @@ export default function App() {
       const backedUp = response.messages.find((message) => message.text.startsWith("Backed up rows"));
       if (backedUp) showNotice(backedUp.text);
     } catch (reason) {
+      if (!isCurrentRun(tab.id, token)) return;
+      const text = errorText(reason);
+      const cancelled = /cancel+ed/i.test(text);
       patchTab(tab.id, {
         running: false,
+        runStartedAt: null,
         resultSets: [],
-        elapsedMs: Math.round(performance.now() - started),
+        elapsedMs: Math.round(Date.now() - started),
         activePane: "messages",
-        messages: [{ level: "error", text: errorText(reason) }],
+        messages: [{ level: cancelled ? "info" : "error", text: cancelled ? "Query was cancelled." : text }],
       });
     }
   }
@@ -438,23 +577,32 @@ export default function App() {
       return;
     }
     const target = executionSql(editors.current.get(tab.id), tab.sql);
-    patchTab(tab.id, { running: true });
+    const token = nextRunToken(tab.id);
+    const started = Date.now();
+    patchTab(tab.id, { running: true, runStartedAt: started, elapsedMs: 0 });
     try {
       const response = await parseSql(tab.connectionId, tab.database, target.sql);
+      if (!isCurrentRun(tab.id, token)) return;
       if (target.selected) {
         response.messages = [{ level: "info", text: "Parsed the selected text." }, ...response.messages];
       }
       patchTab(tab.id, {
         running: false,
+        runStartedAt: null,
         messages: response.messages,
         elapsedMs: response.elapsedMs,
         activePane: "messages",
       });
     } catch (reason) {
+      if (!isCurrentRun(tab.id, token)) return;
+      const text = errorText(reason);
+      const cancelled = /cancel+ed/i.test(text);
       patchTab(tab.id, {
         running: false,
+        runStartedAt: null,
+        elapsedMs: Math.round(Date.now() - started),
         activePane: "messages",
-        messages: [{ level: "error", text: errorText(reason) }],
+        messages: [{ level: cancelled ? "info" : "error", text: cancelled ? "Query was cancelled." : text }],
       });
     }
   }
@@ -595,6 +743,57 @@ export default function App() {
     return "saved";
   }
 
+  function openScriptContents(name: string, contents: string) {
+    const chosen = chooseConnection();
+    openTab(chosen.connectionId, chosen.database, contents.endsWith("\n") ? contents : `${contents}\n`, name);
+    showNotice(`Opened ${name}.`);
+  }
+
+  async function openScriptFromPath(path: string) {
+    try {
+      const contents = await invoke<string>("read_text_file", {
+        path,
+        maxBytes: SCRIPT_FILE_LIMIT,
+      });
+      const name = path.split(/[/\\]/).pop() || "script.sql";
+      openScriptContents(name, contents);
+    } catch (reason) {
+      showNotice(errorText(reason));
+    }
+  }
+
+  async function openScriptFile(): Promise<void> {
+    const tauri = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
+    if (!tauri) {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".sql,.txt,.pgsql,.mysql,.mssql,text/plain,text/sql";
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        void file
+          .text()
+          .then((contents) => openScriptContents(file.name, contents))
+          .catch((reason) => showNotice(errorText(reason)));
+      };
+      input.click();
+      return;
+    }
+    const picked = await invoke<string | null>("plugin:dialog|open", {
+      options: {
+        title: "Open SQL Script or Backup",
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: "SQL script / backup", extensions: ["sql", "txt", "pgsql", "mysql", "mssql"] },
+          { name: "All files", extensions: ["*"] },
+        ],
+      },
+    });
+    if (!picked) return;
+    await openScriptFromPath(picked);
+  }
+
   async function openTextFile(): Promise<{ name: string; contents: string } | null> {
     const tauri = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
     if (!tauri) {
@@ -686,30 +885,61 @@ export default function App() {
     showNotice(response.messages[0]?.text ?? "Restored the backed-up rows.");
   }
 
+  function openScriptDialog(
+    connectionId: string,
+    database: string,
+    object: DbObject | null,
+    preset: "schema" | "backup" | "custom",
+  ) {
+    setScriptJob({ connectionId, database, object, preset });
+    setMenu(null);
+  }
+
   async function runGenerate(
     connectionId: string,
     database: string,
     object: DbObject | null,
     mode: "create" | "insert" | "both" | "schema" | "backup",
+    options?: ScriptGenerateOptions,
   ) {
+    if (!options && (mode === "schema" || mode === "backup")) {
+      openScriptDialog(connectionId, database, object, mode);
+      return;
+    }
     if (scriptingRef.current) return;
     scriptingRef.current = true;
-    const backup = mode === "backup";
-    showNotice(backup ? "Creating backup..." : "Generating script...");
+    const backup = Boolean(options?.includeData) && Boolean(options?.includeCreate) && !object;
+    showNotice(backup || options?.includeData ? "Creating script..." : "Generating script...");
     try {
+      const request = options ?? {
+        includeCreate: mode !== "insert",
+        includeData: mode === "insert" || mode === "both",
+        includeDatabase: false,
+        includeSchemas: false,
+        includeTables: true,
+        includeViews: true,
+        includeProcedures: true,
+        includeFunctions: true,
+        selected: object
+          ? [{ schema: object.schema, name: object.name, kind: object.kind }]
+          : null,
+      };
       const result = await generateScript(
         connectionId,
         database,
         object?.schema ?? "",
         object?.name ?? database,
         object?.kind ?? "database",
-        mode !== "insert",
-        mode === "insert" || mode === "both" || backup,
+        request.includeCreate,
+        request.includeData,
+        request,
       );
       const notes = result.warnings.length ? `\n-- ${result.warnings.join("\n-- ")}\n` : "";
       const sql = `${result.sql}${notes}`;
-      const fileName = object ? `${object.name}.sql` : `${database}-${backup ? "backup" : "script"}.sql`;
-      if (backup || sql.length > 1_500_000) {
+      const fileName = object
+        ? `${object.name}.sql`
+        : `${database}-${request.includeData ? "backup" : "script"}.sql`;
+      if (request.includeData || sql.length > 1_500_000) {
         const saved = await saveSqlFile(fileName, sql);
         showNotice(
           saved === "cancelled"
@@ -723,7 +953,7 @@ export default function App() {
         const title =
           object && (kind === "view" || kind === "procedure" || kind === "function")
             ? routineTitle(connectionId, object)
-            : "";
+            : fileName;
         openTab(connectionId, database, sql.endsWith("\n") ? sql : `${sql}\n`, title);
         if (result.warnings.length) {
           showNotice(`Script opened with ${result.warnings.length} warning(s).`);
@@ -731,6 +961,7 @@ export default function App() {
       }
     } catch (reason) {
       showNotice(errorText(reason));
+      throw reason;
     } finally {
       scriptingRef.current = false;
     }
@@ -738,10 +969,12 @@ export default function App() {
 
   const runRef = useRef(runQuery);
   const parseRef = useRef(parseQuery);
+  const cancelRef = useRef(cancelQuery);
   const formatRef = useRef(formatQuery);
   const newQueryRef = useRef(() => newQuery());
   runRef.current = runQuery;
   parseRef.current = parseQuery;
+  cancelRef.current = cancelQuery;
   formatRef.current = formatQuery;
   newQueryRef.current = () => newQuery();
 
@@ -919,6 +1152,12 @@ export default function App() {
           onDismiss={() => setMenu(null)}
           items={[
             { label: "New Query", hint: "Ctrl+N", icon: <NewQueryIcon />, action: () => newQuery() },
+            {
+              label: "Open Script...",
+              hint: "",
+              icon: <OpenIcon />,
+              action: () => void openScriptFile(),
+            },
             { label: "Connect...", hint: "", icon: <PlugIcon />, action: () => openConnect() },
             ...recent.slice(0, 5).map((profile) => ({
               label: `Connect to ${profile.name}`,
@@ -928,24 +1167,24 @@ export default function App() {
               action: () => void quickConnect(profile),
             })),
             {
-              label: "Generate Scripts",
+              label: "Generate Scripts...",
               hint: "",
               icon: <ScriptIcon />,
               disabled: !activeTab?.connectionId || !activeTab.database,
               action: () => {
                 if (activeTab?.connectionId && activeTab.database) {
-                  void runGenerate(activeTab.connectionId, activeTab.database, null, "schema");
+                  openScriptDialog(activeTab.connectionId, activeTab.database, null, "schema");
                 }
               },
             },
             {
-              label: "Backup Database",
+              label: "Backup Database...",
               hint: "",
               icon: <BackupIcon />,
               disabled: !activeTab?.connectionId || !activeTab.database,
               action: () => {
                 if (activeTab?.connectionId && activeTab.database) {
-                  void runGenerate(activeTab.connectionId, activeTab.database, null, "backup");
+                  openScriptDialog(activeTab.connectionId, activeTab.database, null, "backup");
                 }
               },
             },
@@ -1010,6 +1249,13 @@ export default function App() {
           onDismiss={() => setMenu(null)}
           items={[
             { label: "Execute", hint: "F5", icon: <PlayIcon />, disabled: editorLocked || !activeTab || activeTab.running, action: () => void runQuery() },
+            {
+              label: "Cancel Executing Query",
+              hint: "Esc",
+              icon: <StopIcon />,
+              disabled: editorLocked || !activeTab?.running,
+              action: () => void cancelQuery(),
+            },
             {
               label: "Parse",
               hint: "Ctrl+F5",
@@ -1098,10 +1344,17 @@ export default function App() {
           <NewQueryIcon />
         </button>
         <span className="tool-sep" />
-        <button className="tool primary" title="Execute (F5). Runs the highlighted text, or the whole script when nothing is selected." disabled={editorLocked || !activeTab || activeTab.running} onMouseDown={(event) => event.preventDefault()} onClick={() => void runQuery()}>
-          <PlayIcon />
-          <span>Execute</span>
-        </button>
+        {activeTab?.running ? (
+          <button className="tool stop" title="Cancel executing query (Esc)" disabled={editorLocked} onMouseDown={(event) => event.preventDefault()} onClick={() => void cancelQuery()}>
+            <StopIcon />
+            <span>Cancel</span>
+          </button>
+        ) : (
+          <button className="tool primary" title="Execute (F5). Runs the highlighted text, or the whole script when nothing is selected." disabled={editorLocked || !activeTab} onMouseDown={(event) => event.preventDefault()} onClick={() => void runQuery()}>
+            <PlayIcon />
+            <span>Execute</span>
+          </button>
+        )}
         <button className="tool" title="Parse (Ctrl+F5). Checks the highlighted text, or the whole script when nothing is selected." disabled={editorLocked || !activeTab || activeTab.running} onMouseDown={(event) => event.preventDefault()} onClick={() => void parseQuery()}>
           <CheckIcon />
         </button>
@@ -1563,6 +1816,13 @@ export default function App() {
                         resultSets={activeTab.resultSets}
                         messages={activeTab.messages}
                         activePane={activeTab.activePane}
+                        running={activeTab.running}
+                        elapsedMs={
+                          activeTab.running && activeTab.runStartedAt != null
+                            ? Math.max(0, Math.round((clock || Date.now()) - activeTab.runStartedAt))
+                            : activeTab.elapsedMs
+                        }
+                        onCancel={() => void cancelQuery()}
                         onPane={(pane) => patchTab(activeTab.id, { activePane: pane })}
                         onExport={(format) => void exportResults(format)}
                       />
@@ -1596,7 +1856,22 @@ export default function App() {
       </div>
 
       <footer className="status-bar">
-        <span>{activeTab?.running ? "Executing..." : notice || "Ready"}</span>
+        {activeTab?.running ? (
+          <span className="executing">
+            <span className="executing-spinner" aria-hidden="true" />
+            <span>
+              Executing...
+              {activeTab.runStartedAt != null
+                ? ` ${Math.max(0, Math.round((clock || Date.now()) - activeTab.runStartedAt)).toLocaleString()} ms`
+                : ""}
+            </span>
+            <button className="status-cancel" type="button" onClick={() => void cancelQuery()}>
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <span>{notice || "Ready"}</span>
+        )}
         <span>
           {barConnection
             ? `${engineLabel(barConnection.engine)} | ${barConnection.host}`
@@ -1604,8 +1879,14 @@ export default function App() {
         </span>
         <span>{barDatabase || "no database"}</span>
         <span className="right">
-          <span>{activeTab?.elapsedMs != null ? `${activeTab.elapsedMs} ms` : ""}</span>
-          <span>{activeTab ? `${rowCount.toLocaleString()} rows` : ""}</span>
+          <span>
+            {activeTab?.running && activeTab.runStartedAt != null
+              ? `${Math.max(0, Math.round((clock || Date.now()) - activeTab.runStartedAt)).toLocaleString()} ms`
+              : activeTab?.elapsedMs != null
+                ? `${activeTab.elapsedMs} ms`
+                : ""}
+          </span>
+          <span>{activeTab && !activeTab.running ? `${rowCount.toLocaleString()} rows` : ""}</span>
           <span>
             Ln {activeTab?.line ?? 1}, Col {activeTab?.column ?? 1}
           </span>
@@ -1629,6 +1910,28 @@ export default function App() {
           onSubmit={(name) => applyRename(rename, name)}
         />
       ) : null}
+      {scriptJob ? (
+        <ScriptDialog
+          connectionId={scriptJob.connectionId}
+          database={scriptJob.database}
+          engine={connections.find((item) => item.id === scriptJob.connectionId)?.engine ?? "postgres"}
+          object={scriptJob.object}
+          preset={scriptJob.preset}
+          onCancel={() => setScriptJob(null)}
+          onGenerate={async (options) => {
+            const job = scriptJob;
+            await runGenerate(
+              job.connectionId,
+              job.database,
+              job.object,
+              options.includeData && options.includeCreate ? "both" : options.includeData ? "insert" : "create",
+              options,
+            );
+            setScriptJob(null);
+          }}
+        />
+      ) : null}
+      {dropActive ? <div className="drop-hint">Drop SQL script to open in a new query tab</div> : null}
       {historyOpen ? (
         <HistoryDialog
           version={historyVersion}

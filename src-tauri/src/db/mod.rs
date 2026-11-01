@@ -30,6 +30,58 @@ pub enum Outcome {
     },
 }
 
+pub enum QueryCancel {
+    Postgres {
+        token: tokio_postgres::CancelToken,
+        ssl: bool,
+        trust_cert: bool,
+    },
+    Mysql {
+        thread_id: u32,
+    },
+    Mssql {
+        spid: i16,
+    },
+}
+
+pub async fn capture_cancel(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+) -> Result<QueryCancel, String> {
+    ensure_open(conn, creds).await?;
+    match conn {
+        EngineConn::Postgres(clients) => {
+            let database = postgres_db(creds, database);
+            let client = postgres::ensure(clients, creds, database).await?;
+            Ok(QueryCancel::Postgres {
+                token: client.cancel_token(),
+                ssl: creds.ssl,
+                trust_cert: creds.trust_cert,
+            })
+        }
+        EngineConn::Mysql(inner) => Ok(QueryCancel::Mysql {
+            thread_id: inner.id(),
+        }),
+        EngineConn::Mssql(client) => Ok(QueryCancel::Mssql {
+            spid: mssql::session_id(client).await?,
+        }),
+        EngineConn::Closed => Err("Connection is closed.".into()),
+    }
+}
+
+pub async fn cancel_query(cancel: QueryCancel, creds: &Credentials) -> Result<(), String> {
+    match cancel {
+        QueryCancel::Postgres {
+            token,
+            ssl,
+            trust_cert,
+        } => postgres::cancel_query(&token, ssl, trust_cert).await,
+        QueryCancel::Mysql { thread_id } => mysql::kill_query(creds, thread_id).await,
+        QueryCancel::Mssql { spid } => mssql::kill_session(creds, spid).await,
+    }
+}
+
 pub async fn open(creds: &Credentials) -> Result<EngineConn, String> {
     match creds.engine {
         EngineKind::Postgres => {
@@ -264,6 +316,62 @@ pub async fn script_routine(
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ScriptOptions {
+    pub include_create: bool,
+    pub include_data: bool,
+    pub include_database: bool,
+    pub include_schemas: bool,
+    pub include_tables: bool,
+    pub include_views: bool,
+    pub include_procedures: bool,
+    pub include_functions: bool,
+    pub selected: Option<Vec<(String, String, String)>>,
+}
+
+impl ScriptOptions {
+    pub fn basic(include_create: bool, include_data: bool) -> Self {
+        Self {
+            include_create,
+            include_data,
+            include_database: include_create,
+            include_schemas: include_create,
+            include_tables: true,
+            include_views: include_create,
+            include_procedures: include_create,
+            include_functions: include_create,
+            selected: None,
+        }
+    }
+
+    fn allows_kind(&self, kind: &str) -> bool {
+        match kind {
+            "table" => self.include_tables,
+            "view" => self.include_views,
+            "procedure" => self.include_procedures,
+            "function" => self.include_functions,
+            _ => false,
+        }
+    }
+
+    fn allows_object(&self, object: &DbObject) -> bool {
+        if !self.allows_kind(object.kind.as_str()) {
+            return false;
+        }
+        let Some(selected) = &self.selected else {
+            return true;
+        };
+        if selected.is_empty() {
+            return false;
+        }
+        selected.iter().any(|(schema, name, kind)| {
+            schema.eq_ignore_ascii_case(&object.schema)
+                && name.eq_ignore_ascii_case(&object.name)
+                && (kind.is_empty() || kind.eq_ignore_ascii_case(&object.kind))
+        })
+    }
+}
+
 pub async fn generate_script(
     conn: &mut EngineConn,
     creds: &Credentials,
@@ -271,14 +379,17 @@ pub async fn generate_script(
     schema: &str,
     name: &str,
     kind: &str,
-    include_create: bool,
-    include_data: bool,
+    options: ScriptOptions,
 ) -> Result<ScriptResult, String> {
     if database.is_empty() {
         return Err("Choose a database first.".into());
     }
-    if !include_create && !include_data {
-        return Err("Choose a script to generate.".into());
+    if !options.include_create
+        && !options.include_data
+        && !options.include_schemas
+        && !options.include_database
+    {
+        return Err("Choose what to include in the script.".into());
     }
     ensure_open(conn, creds).await?;
     match conn {
@@ -290,12 +401,44 @@ pub async fn generate_script(
         return Err("Connection is closed.".into());
     }
 
-    let mut sql = script::script_header(database, include_data);
+    let mut sql = script::script_header(database, options.include_data);
     let mut warnings = Vec::new();
     if kind == "database" {
+        if options.include_database {
+            if let Some(statement) = script::create_database_sql(creds.engine, database) {
+                sql.push_str(&statement);
+                sql.push('\n');
+            }
+        }
         let objects = list_objects(conn, creds, database).await?;
-        for object in objects {
-            match script_object(conn, creds, database, &object, include_create, include_data).await
+        let selected: Vec<DbObject> = objects
+            .into_iter()
+            .filter(|object| options.allows_object(object))
+            .collect();
+        if options.include_schemas && options.include_create {
+            let mut schemas = selected
+                .iter()
+                .map(|object| object.schema.clone())
+                .collect::<Vec<_>>();
+            schemas.sort();
+            schemas.dedup();
+            for schema_name in schemas {
+                if let Some(statement) = script::create_schema_sql(creds.engine, &schema_name) {
+                    sql.push_str(&statement);
+                    sql.push('\n');
+                }
+            }
+        }
+        for object in selected {
+            match script_object(
+                conn,
+                creds,
+                database,
+                &object,
+                options.include_create,
+                options.include_data,
+            )
+            .await
             {
                 Ok((chunk, notes)) => {
                     sql.push_str(&chunk);
@@ -321,14 +464,32 @@ pub async fn generate_script(
             schema.trim().to_string()
         };
         let name = require_ident(name, "Object")?;
-        let object = crate::model::DbObject::plain(schema, name, kind);
-        let (chunk, notes) =
-            script_object(conn, creds, database, &object, include_create, include_data).await?;
+        let object = crate::model::DbObject::plain(schema.clone(), name, kind);
+        if options.include_schemas && options.include_create {
+            if let Some(statement) = script::create_schema_sql(creds.engine, &schema) {
+                sql.push_str(&statement);
+                sql.push('\n');
+            }
+        }
+        let (chunk, notes) = script_object(
+            conn,
+            creds,
+            database,
+            &object,
+            options.include_create,
+            options.include_data,
+        )
+        .await?;
         sql.push_str(&chunk);
         warnings.extend(notes);
     }
-    if sql.trim().is_empty() {
-        return Err("Nothing was scripted.".into());
+    let trimmed = sql
+        .lines()
+        .filter(|line| !line.starts_with("-- DB Manager") && !line.starts_with("-- Row data"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if trimmed.trim().is_empty() {
+        return Err("Nothing was scripted for the selected options.".into());
     }
     Ok(ScriptResult { sql, warnings })
 }

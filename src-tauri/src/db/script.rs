@@ -1,4 +1,4 @@
-use crate::model::{quote_mssql, quote_mysql, quote_pg, EngineKind};
+use crate::model::{EngineKind, quote_mssql, quote_mysql, quote_pg};
 
 pub const SCRIPT_ROW_LIMIT: usize = 5_000;
 
@@ -40,10 +40,7 @@ pub fn sql_value(engine: EngineKind, value: Option<&str>) -> String {
     match engine {
         EngineKind::Mssql => format!("N'{}'", value.replace('\'', "''")),
         EngineKind::Postgres => format!("'{}'", value.replace('\'', "''")),
-        EngineKind::Mysql => format!(
-            "'{}'",
-            value.replace('\\', "\\\\").replace('\'', "''")
-        ),
+        EngineKind::Mysql => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''")),
     }
 }
 
@@ -124,7 +121,12 @@ pub fn insert_sql(
             let values = columns
                 .iter()
                 .enumerate()
-                .map(|(column_index, _)| sql_value(engine, row.get(column_index).and_then(|value| value.as_deref())))
+                .map(|(column_index, _)| {
+                    sql_value(
+                        engine,
+                        row.get(column_index).and_then(|value| value.as_deref()),
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             sql.push_str("    (");
@@ -145,7 +147,67 @@ pub fn insert_sql(
 
 pub fn script_header(database: &str, include_data: bool) -> String {
     let kind = if include_data { "backup" } else { "script" };
-    format!("-- DB Manager {kind} of {database}\n-- Row data is limited to {SCRIPT_ROW_LIMIT} rows per table.\n\n")
+    format!(
+        "-- DB Manager {kind} of {database}\n-- Row data is limited to {SCRIPT_ROW_LIMIT} rows per table.\n\n"
+    )
+}
+
+pub fn create_database_sql(engine: EngineKind, database: &str) -> Option<String> {
+    let database = database.trim();
+    if database.is_empty() {
+        return None;
+    }
+    match engine {
+        EngineKind::Postgres => Some(format!(
+            "CREATE DATABASE {};\n",
+            quote_pg(database)
+        )),
+        EngineKind::Mysql => Some(format!(
+            "CREATE DATABASE {};\nUSE {};\n",
+            quote_mysql(database),
+            quote_mysql(database)
+        )),
+        EngineKind::Mssql => {
+            let quoted = quote_mssql(database);
+            Some(format!(
+                "IF DB_ID(N'{}') IS NULL\n    CREATE DATABASE {quoted};\nGO\nUSE {quoted};\nGO\n",
+                database.replace('\'', "''")
+            ))
+        }
+    }
+}
+
+pub fn create_schema_sql(engine: EngineKind, schema: &str) -> Option<String> {
+    let schema = schema.trim();
+    if schema.is_empty() {
+        return None;
+    }
+    match engine {
+        EngineKind::Mysql => None,
+        EngineKind::Postgres => {
+            if schema.eq_ignore_ascii_case("public") {
+                return None;
+            }
+            Some(format!(
+                "CREATE SCHEMA IF NOT EXISTS {};\n",
+                quote_pg(schema)
+            ))
+        }
+        EngineKind::Mssql => {
+            if schema.eq_ignore_ascii_case("dbo")
+                || schema.eq_ignore_ascii_case("guest")
+                || schema.eq_ignore_ascii_case("sys")
+                || schema.eq_ignore_ascii_case("INFORMATION_SCHEMA")
+            {
+                return None;
+            }
+            let quoted = quote_mssql(schema);
+            let literal = schema.replace('\'', "''");
+            Some(format!(
+                "IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'{literal}')\n    EXEC(N'CREATE SCHEMA {quoted}');\nGO\n"
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -169,7 +231,13 @@ mod tests {
             default_sql: None,
             identity: false,
         }];
-        let create = create_table_sql(EngineKind::Postgres, "public", "orders", &columns, &["id".into()]);
+        let create = create_table_sql(
+            EngineKind::Postgres,
+            "public",
+            "orders",
+            &columns,
+            &["id".into()],
+        );
         assert!(create.contains("CREATE TABLE \"public\".\"orders\""));
         assert!(create.contains("PRIMARY KEY (\"id\")"));
         let insert = insert_sql(

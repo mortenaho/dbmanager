@@ -787,6 +787,23 @@ fn statement_words(sql: &str) -> Vec<String> {
     words
 }
 
+pub async fn session_id(client: &mut MssqlClient) -> Result<i16, String> {
+    let rows = query_rows(client, "SELECT CONVERT(smallint, @@SPID)", &[]).await?;
+    let row = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Could not read the SQL Server session id.".to_string())?;
+    row.try_get::<i16, _>(0)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Could not read the SQL Server session id.".to_string())
+}
+
+pub async fn kill_session(creds: &Credentials, spid: i16) -> Result<(), String> {
+    let mut client = connect(creds, &creds.database).await?;
+    let sql = format!("KILL {spid}");
+    exec(&mut client, &sql).await
+}
+
 async fn query_rows(
     client: &mut MssqlClient,
     sql: &str,

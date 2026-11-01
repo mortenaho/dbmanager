@@ -7,9 +7,11 @@ const SECTIONS: Array<{ title: string; rows: Array<{ action: string; keys: strin
     title: "Query",
     rows: [
       { action: "Execute", keys: ["F5", "Ctrl+E"] },
+      { action: "Cancel executing query", keys: ["Esc"] },
       { action: "Parse", keys: ["Ctrl+F5"] },
       { action: "Format SQL", keys: ["Shift+Alt+F"] },
       { action: "New query", keys: ["Ctrl+N"] },
+      { action: "Open script / backup", keys: ["File menu", "Drop .sql"] },
       { action: "Close query", keys: ["Ctrl+W"] },
     ],
   },

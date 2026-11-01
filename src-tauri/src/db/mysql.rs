@@ -586,6 +586,13 @@ pub async fn parse(conn: &mut mysql_async::Conn, sql: &str) -> Outcome {
     }
 }
 
+pub async fn kill_query(creds: &Credentials, thread_id: u32) -> Result<(), String> {
+    let mut conn = connect(creds, &creds.database).await?;
+    conn.query_drop(format!("KILL QUERY {thread_id}"))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 fn cell(row: &mysql_async::Row, index: usize) -> Option<String> {
     let value: Value = row.get(index).unwrap_or(Value::NULL);
     match value {

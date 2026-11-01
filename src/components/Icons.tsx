@@ -91,6 +91,14 @@ export function PlayIcon() {
   );
 }
 
+export function StopIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="3.5" y="3.5" width="9" height="9" rx="1" fill="#c4314b" />
+    </svg>
+  );
+}
+
 export function CheckIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">

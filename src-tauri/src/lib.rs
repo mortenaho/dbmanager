@@ -17,6 +17,20 @@ pub fn run() {
         .manage(DbState::default())
         .setup(|app| {
             app.manage(history::open_app(app.handle())?);
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.with_webview(|webview| {
+                    #[cfg(target_os = "linux")]
+                    {
+                        use webkit2gtk::WebViewExt;
+                        // Returning true suppresses WebKit's Back/Reload/Stop menu.
+                        webview.inner().connect_context_menu(|_, _, _, _| true);
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        let _ = webview;
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -33,6 +47,7 @@ pub fn run() {
             commands::read_text_file,
             commands::write_binary_file,
             commands::execute_sql,
+            commands::cancel_sql,
             commands::rollback_history,
             commands::parse_sql,
             commands::load_profiles,

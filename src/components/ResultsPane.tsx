@@ -6,6 +6,9 @@ type Props = {
   resultSets: ResultSet[];
   messages: QueryMessage[];
   activePane: "results" | "messages";
+  running?: boolean;
+  elapsedMs?: number | null;
+  onCancel?: () => void;
   onPane: (pane: "results" | "messages") => void;
   onExport: (format: "xlsx" | "json") => void;
   captions?: string[];
@@ -20,7 +23,17 @@ type DragKind = "cells" | "rows" | "columns";
 
 const ROW_HEIGHT = 22;
 
-export function ResultsPane({ resultSets, messages, activePane, onPane, onExport, captions }: Props) {
+export function ResultsPane({
+  resultSets,
+  messages,
+  activePane,
+  running = false,
+  elapsedMs = null,
+  onCancel,
+  onPane,
+  onExport,
+  captions,
+}: Props) {
   const grids = resultSets.filter((set) => set.columns.length > 0);
   const writes = resultSets.filter((set) => set.columns.length === 0);
   const hasError = messages.some((message) => message.level === "error");
@@ -41,17 +54,30 @@ export function ResultsPane({ resultSets, messages, activePane, onPane, onExport
           Messages
         </button>
         <span className="spacer" />
-        <button className="export" type="button" disabled={grids.length === 0} onClick={() => onExport("xlsx")}>
+        <button className="export" type="button" disabled={grids.length === 0 || running} onClick={() => onExport("xlsx")}>
           <ExcelIcon />
           Excel
         </button>
-        <button className="export" type="button" disabled={grids.length === 0} onClick={() => onExport("json")}>
+        <button className="export" type="button" disabled={grids.length === 0 || running} onClick={() => onExport("json")}>
           <JsonIcon />
           JSON
         </button>
       </div>
       <div className="result-body">
-        {activePane === "messages" ? (
+        {running ? (
+          <div className="executing-panel" role="status" aria-live="polite">
+            <div className="executing-spinner" aria-hidden="true" />
+            <div className="executing-copy">
+              <strong>Executing...</strong>
+              <span>{elapsedMs != null ? `${elapsedMs.toLocaleString()} ms` : "Starting"}</span>
+            </div>
+            {onCancel ? (
+              <button className="executing-cancel" type="button" onClick={onCancel}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
+        ) : activePane === "messages" ? (
           <div className="messages">
             {messages.length === 0 ? <div className="empty-results">No messages.</div> : null}
             {messages.map((message, index) => (

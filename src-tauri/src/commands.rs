@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use tauri::{AppHandle, State};
@@ -91,6 +92,8 @@ pub async fn connect(
     let session = Arc::new(Session {
         creds,
         conn: Mutex::new(conn),
+        active_cancel: StdMutex::new(None),
+        cancelled: AtomicBool::new(false),
     });
     state.sessions.lock().await.insert(id.clone(), session);
     history.note(
@@ -250,6 +253,14 @@ pub async fn script_routine(
     .await
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptObjectRef {
+    pub schema: String,
+    pub name: String,
+    pub kind: String,
+}
+
 #[tauri::command]
 pub async fn generate_script(
     history: State<'_, HistoryDb>,
@@ -261,10 +272,44 @@ pub async fn generate_script(
     kind: String,
     include_create: bool,
     include_data: bool,
+    include_database: Option<bool>,
+    include_schemas: Option<bool>,
+    include_tables: Option<bool>,
+    include_views: Option<bool>,
+    include_procedures: Option<bool>,
+    include_functions: Option<bool>,
+    selected: Option<Vec<ScriptObjectRef>>,
 ) -> Result<ScriptResult, String> {
     let session = session(&state, &connection_id).await?;
     let creds = session.creds.clone();
     let mut conn = session.conn.lock().await;
+    let mut options = crate::db::ScriptOptions::basic(include_create, include_data);
+    if let Some(value) = include_database {
+        options.include_database = value;
+    }
+    if let Some(value) = include_schemas {
+        options.include_schemas = value;
+    }
+    if let Some(value) = include_tables {
+        options.include_tables = value;
+    }
+    if let Some(value) = include_views {
+        options.include_views = value;
+    }
+    if let Some(value) = include_procedures {
+        options.include_procedures = value;
+    }
+    if let Some(value) = include_functions {
+        options.include_functions = value;
+    }
+    if let Some(items) = selected {
+        options.selected = Some(
+            items
+                .into_iter()
+                .map(|item| (item.schema, item.name, item.kind))
+                .collect(),
+        );
+    }
     let result = crate::db::generate_script(
         &mut conn,
         &creds,
@@ -272,8 +317,7 @@ pub async fn generate_script(
         schema.trim(),
         name.trim(),
         kind.trim(),
-        include_create,
-        include_data,
+        options,
     )
     .await;
     match &result {
@@ -308,16 +352,24 @@ pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn read_text_file(path: String) -> Result<String, String> {
+pub fn read_text_file(path: String, max_bytes: Option<u64>) -> Result<String, String> {
     let path = path.trim();
     if path.is_empty() {
         return Err("Choose a file path.".into());
     }
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
-    if meta.len() > 2_000_000 {
-        return Err("The design file is too large.".into());
+    let limit = max_bytes.unwrap_or(2_000_000);
+    if meta.len() > limit {
+        return Err(format!(
+            "The file is too large ({} bytes). Limit is {} bytes.",
+            meta.len(),
+            limit
+        ));
     }
-    std::fs::read_to_string(path).map_err(|e| e.to_string())
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map_err(|_| {
+        "This file is not a UTF-8 text script. Open a .sql backup/script file instead.".into()
+    })
 }
 
 #[tauri::command]
@@ -430,29 +482,54 @@ pub async fn execute_sql(
     let creds = session.creds.clone();
     let started = Instant::now();
     let mut conn = session.conn.lock().await;
+    arm_cancel(&session, &mut conn, database).await;
+    let result = execute_sql_locked(
+        &history,
+        &creds,
+        &mut conn,
+        database,
+        &sql,
+        max_rows,
+        &plans,
+        started,
+    )
+    .await;
+    finish_cancel(&session, &mut conn, result)
+}
+
+async fn execute_sql_locked(
+    history: &HistoryDb,
+    creds: &Credentials,
+    conn: &mut crate::db::EngineConn,
+    database: &str,
+    sql: &str,
+    max_rows: Option<u32>,
+    plans: &[crate::db::backup::WritePlan],
+    started: Instant,
+) -> Result<QueryResponse, String> {
     if plans.is_empty() {
         return finish_query(
-            &history,
-            &creds,
+            history,
+            creds,
             crate::db::execute(
-                &mut conn,
-                &creds,
+                conn,
+                creds,
                 database,
-                &sql,
+                sql,
                 max_rows.unwrap_or(5_000) as usize,
             )
             .await,
             database,
-            &sql,
+            sql,
             started,
             &[],
         );
     }
-    let lock_rows = !crate::db::backup::batch_controls_transaction(&sql);
+    let lock_rows = !crate::db::backup::batch_controls_transaction(sql);
     if lock_rows {
         if let Err(error) = crate::db::execute_on(
-            &mut conn,
-            &creds,
+            conn,
+            creds,
             database,
             crate::db::backup::begin_sql(creds.engine),
             1,
@@ -461,10 +538,10 @@ pub async fn execute_sql(
         .await
         {
             return blocked_write(
-                &history,
-                &creds,
+                history,
+                creds,
                 database,
-                &sql,
+                sql,
                 format!(
                     "Could not start a backup transaction, so the statement was not run. {error}"
                 ),
@@ -472,14 +549,14 @@ pub async fn execute_sql(
         }
     }
     let mut backups = Vec::new();
-    for plan in &plans {
-        match crate::db::capture_backup(&mut conn, &creds, database, plan, lock_rows).await {
+    for plan in plans {
+        match crate::db::capture_backup(conn, creds, database, plan, lock_rows).await {
             Ok(backup) => backups.push(backup),
             Err(error) => {
                 if lock_rows {
                     let _ = crate::db::execute_on(
-                        &mut conn,
-                        &creds,
+                        conn,
+                        creds,
                         database,
                         crate::db::backup::rollback_sql(creds.engine),
                         1,
@@ -487,15 +564,15 @@ pub async fn execute_sql(
                     )
                     .await;
                 }
-                return blocked_write(&history, &creds, database, &sql, error);
+                return blocked_write(history, creds, database, sql, error);
             }
         }
     }
     let executed = match crate::db::execute_on(
-        &mut conn,
-        &creds,
+        conn,
+        creds,
         database,
-        &sql,
+        sql,
         max_rows.unwrap_or(5_000) as usize,
         !lock_rows,
     )
@@ -504,8 +581,8 @@ pub async fn execute_sql(
         Err(error) => {
             if lock_rows {
                 if let Err(rollback_error) = crate::db::execute_on(
-                    &mut conn,
-                    &creds,
+                    conn,
+                    creds,
                     database,
                     crate::db::backup::rollback_sql(creds.engine),
                     1,
@@ -514,26 +591,26 @@ pub async fn execute_sql(
                 .await
                 {
                     return finish_query(
-                        &history,
-                        &creds,
+                        history,
+                        creds,
                         Err(format!(
                             "{error}\nAlso failed to undo the backup transaction: {rollback_error}"
                         )),
                         database,
-                        &sql,
+                        sql,
                         started,
                         &[],
                     );
                 }
             }
-            return finish_query(&history, &creds, Err(error), database, &sql, started, &[]);
+            return finish_query(history, creds, Err(error), database, sql, started, &[]);
         }
         Ok(response) => response,
     };
     if lock_rows {
         if let Err(error) = crate::db::execute_on(
-            &mut conn,
-            &creds,
+            conn,
+            creds,
             database,
             crate::db::backup::commit_sql(creds.engine),
             1,
@@ -542,26 +619,44 @@ pub async fn execute_sql(
         .await
         {
             let _ = crate::db::execute_on(
-                &mut conn,
-                &creds,
+                conn,
+                creds,
                 database,
                 crate::db::backup::rollback_sql(creds.engine),
                 1,
                 false,
             )
             .await;
-            return finish_query(&history, &creds, Err(error), database, &sql, started, &[]);
+            return finish_query(history, creds, Err(error), database, sql, started, &[]);
         }
     }
     finish_query(
-        &history,
-        &creds,
+        history,
+        creds,
         Ok(executed),
         database,
-        &sql,
+        sql,
         started,
         &backups,
     )
+}
+
+#[tauri::command]
+pub async fn cancel_sql(
+    state: State<'_, DbState>,
+    connection_id: String,
+) -> Result<(), String> {
+    let session = session(&state, &connection_id).await?;
+    let cancel = session
+        .active_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+    let Some(cancel) = cancel else {
+        return Err("Nothing is running to cancel.".into());
+    };
+    session.cancelled.store(true, Ordering::SeqCst);
+    crate::db::cancel_query(cancel, &session.creds).await
 }
 
 fn finish_query(
@@ -750,14 +845,20 @@ pub async fn parse_sql(
     let session = session(&state, &connection_id).await?;
     let creds = session.creds.clone();
     let started = Instant::now();
+    let database = database.trim();
     let mut conn = session.conn.lock().await;
-    let mut response = crate::db::parse(&mut conn, &creds, database.trim(), &sql).await?;
-    response.elapsed_ms = started.elapsed().as_millis();
-    response.messages.push(QueryMessage::info(format!(
-        "Completion time: {}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
-    )));
-    Ok(response)
+    arm_cancel(&session, &mut conn, database).await;
+    let result = async {
+        let mut response = crate::db::parse(&mut conn, &creds, database, &sql).await?;
+        response.elapsed_ms = started.elapsed().as_millis();
+        response.messages.push(QueryMessage::info(format!(
+            "Completion time: {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
+        )));
+        Ok(response)
+    }
+    .await;
+    finish_cancel(&session, &mut conn, result)
 }
 
 #[tauri::command]
@@ -970,4 +1071,30 @@ async fn session(state: &DbState, id: &str) -> Result<Arc<Session>, String> {
         .get(id)
         .cloned()
         .ok_or_else(|| "This connection is closed. Connect to the server again.".to_string())
+}
+
+async fn arm_cancel(session: &Session, conn: &mut crate::db::EngineConn, database: &str) {
+    session.cancelled.store(false, Ordering::SeqCst);
+    if let Ok(cancel) = crate::db::capture_cancel(conn, &session.creds, database).await {
+        if let Ok(mut slot) = session.active_cancel.lock() {
+            *slot = Some(cancel);
+        }
+    }
+}
+
+fn finish_cancel(
+    session: &Session,
+    conn: &mut crate::db::EngineConn,
+    result: Result<QueryResponse, String>,
+) -> Result<QueryResponse, String> {
+    if let Ok(mut slot) = session.active_cancel.lock() {
+        *slot = None;
+    }
+    if session.cancelled.swap(false, Ordering::SeqCst) {
+        if matches!(conn, crate::db::EngineConn::Mssql(_)) {
+            *conn = crate::db::EngineConn::Closed;
+        }
+        return Err("Query was cancelled.".into());
+    }
+    result
 }

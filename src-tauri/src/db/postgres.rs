@@ -619,3 +619,26 @@ pub async fn parse(client: &Client, sql: &str) -> Outcome {
         },
     }
 }
+
+pub async fn cancel_query(
+    token: &tokio_postgres::CancelToken,
+    ssl: bool,
+    trust_cert: bool,
+) -> Result<(), String> {
+    if ssl {
+        let mut builder = native_tls::TlsConnector::builder();
+        if trust_cert {
+            builder.danger_accept_invalid_certs(true);
+        }
+        let tls = builder
+            .build()
+            .map_err(|e| format!("TLS setup failed: {e}"))?;
+        let connector = postgres_native_tls::MakeTlsConnector::new(tls);
+        token
+            .cancel_query(connector)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        token.cancel_query(NoTls).await.map_err(|e| e.to_string())
+    }
+}

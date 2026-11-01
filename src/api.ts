@@ -55,6 +55,18 @@ export function renameObject(
   return invoke<string>("rename_object", { connectionId, kind, database, schema, name, newName });
 }
 
+export type ScriptGenerateRequest = {
+  includeCreate: boolean;
+  includeData: boolean;
+  includeDatabase?: boolean;
+  includeSchemas?: boolean;
+  includeTables?: boolean;
+  includeViews?: boolean;
+  includeProcedures?: boolean;
+  includeFunctions?: boolean;
+  selected?: Array<{ schema: string; name: string; kind: string }> | null;
+};
+
 export function generateScript(
   connectionId: string,
   database: string,
@@ -63,6 +75,10 @@ export function generateScript(
   kind: string,
   includeCreate: boolean,
   includeData: boolean,
+  options: ScriptGenerateRequest = {
+    includeCreate,
+    includeData,
+  },
 ): Promise<ScriptResult> {
   return invoke<ScriptResult>("generate_script", {
     connectionId,
@@ -70,8 +86,15 @@ export function generateScript(
     schema,
     name,
     kind,
-    includeCreate,
-    includeData,
+    includeCreate: options.includeCreate,
+    includeData: options.includeData,
+    includeDatabase: options.includeDatabase,
+    includeSchemas: options.includeSchemas,
+    includeTables: options.includeTables,
+    includeViews: options.includeViews,
+    includeProcedures: options.includeProcedures,
+    includeFunctions: options.includeFunctions,
+    selected: options.selected ?? null,
   });
 }
 
@@ -92,6 +115,10 @@ export function executeSql(
   maxRows = 5000,
 ): Promise<QueryResponse> {
   return invoke<QueryResponse>("execute_sql", { connectionId, database, sql, maxRows });
+}
+
+export function cancelSql(connectionId: string): Promise<void> {
+  return invoke("cancel_sql", { connectionId });
 }
 
 export function parseSql(

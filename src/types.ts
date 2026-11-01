@@ -145,6 +145,7 @@ export type QueryTab = {
   messages: QueryMessage[];
   elapsedMs: number | null;
   running: boolean;
+  runStartedAt: number | null;
   activePane: "results" | "messages";
   line: number;
   column: number;
