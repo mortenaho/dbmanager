@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use chrono::Timelike;
 use futures_util::TryStreamExt;
 use tiberius::{AuthMethod, Client, ColumnType, Config, EncryptionLevel, QueryItem, ToSql};
 use tokio::net::TcpStream;
@@ -271,6 +272,11 @@ pub async fn rename_relation(
     exec(client, &sql).await
 }
 
+pub async fn create_database(client: &mut MssqlClient, name: &str) -> Result<(), String> {
+    let sql = format!("CREATE DATABASE {}", quote_mssql(name));
+    exec(client, &sql).await
+}
+
 pub async fn rename_database(
     client: &mut MssqlClient,
     name: &str,
@@ -423,6 +429,61 @@ fn sql_nstring(value: &str) -> String {
 }
 
 pub async fn execute(client: &mut MssqlClient, sql: &str, max_rows: usize) -> Outcome {
+    // `GO` is an SSMS/sqlcmd client batch separator, not T-SQL. Split here so
+    // generated scripts (CREATE DATABASE / USE / CREATE TABLE) run correctly.
+    let batches = split_go_batches(sql);
+    if batches.is_empty() {
+        return Outcome::Done {
+            response: QueryResponse {
+                result_sets: Vec::new(),
+                messages: vec![QueryMessage::info("Commands completed successfully.")],
+                elapsed_ms: 0,
+            },
+            drop_connection: false,
+        };
+    }
+    if batches.len() == 1 {
+        return execute_one_batch(client, &batches[0], max_rows).await;
+    }
+
+    let mut sets = Vec::new();
+    let mut messages = Vec::new();
+    let mut drop_connection = false;
+    for (index, batch) in batches.iter().enumerate() {
+        match execute_one_batch(client, batch, max_rows).await {
+            Outcome::Done {
+                response,
+                drop_connection: drop,
+            } => {
+                sets.extend(response.result_sets);
+                messages.extend(response.messages);
+                if drop {
+                    drop_connection = true;
+                    break;
+                }
+            }
+            Outcome::Failed {
+                message,
+                drop_connection: drop,
+            } => {
+                return Outcome::Failed {
+                    message: format!("Batch {}: {message}", index + 1),
+                    drop_connection: drop,
+                };
+            }
+        }
+    }
+    Outcome::Done {
+        response: QueryResponse {
+            result_sets: sets,
+            messages,
+            elapsed_ms: 0,
+        },
+        drop_connection,
+    }
+}
+
+async fn execute_one_batch(client: &mut MssqlClient, sql: &str, max_rows: usize) -> Outcome {
     // simple_query discards the DONE token, which is the only place SQL Server
     // reports how many rows an INSERT, UPDATE, or DELETE changed. A batch with
     // no result set can go through execute(), which keeps those counts.
@@ -626,6 +687,127 @@ fn batch_changes_transaction(sql: &str) -> bool {
     })
 }
 
+/// Split SSMS/sqlcmd `GO` batch separators without sending `GO` to the server.
+fn split_go_batches(sql: &str) -> Vec<String> {
+    let mut batches = Vec::new();
+    let mut current = String::new();
+    let mut chars = sql.char_indices().peekable();
+    let mut line_start = true;
+
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '\n' {
+            current.push(ch);
+            line_start = true;
+            continue;
+        }
+        if ch == '\r' {
+            current.push(ch);
+            continue;
+        }
+        if ch == '-' && matches!(chars.peek(), Some((_, '-'))) {
+            current.push(ch);
+            current.push(chars.next().map(|(_, c)| c).unwrap_or('-'));
+            line_start = false;
+            for (_, next) in chars.by_ref() {
+                current.push(next);
+                if next == '\n' {
+                    line_start = true;
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
+            current.push(ch);
+            current.push(chars.next().map(|(_, c)| c).unwrap_or('*'));
+            line_start = false;
+            while let Some((_, next)) = chars.next() {
+                current.push(next);
+                if next == '*' && matches!(chars.peek(), Some((_, '/'))) {
+                    current.push(chars.next().map(|(_, c)| c).unwrap_or('/'));
+                    break;
+                }
+                if next == '\n' {
+                    line_start = true;
+                }
+            }
+            continue;
+        }
+        if ch == '\'' {
+            current.push(ch);
+            line_start = false;
+            while let Some((_, next)) = chars.next() {
+                current.push(next);
+                if next == '\'' {
+                    if matches!(chars.peek(), Some((_, '\''))) {
+                        current.push(chars.next().map(|(_, c)| c).unwrap_or('\''));
+                        continue;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == 'N' || ch == 'n' {
+            if matches!(chars.peek(), Some((_, '\''))) {
+                current.push(ch);
+                continue;
+            }
+        }
+        if ch == '[' {
+            current.push(ch);
+            line_start = false;
+            for (_, next) in chars.by_ref() {
+                current.push(next);
+                if next == ']' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if line_start && (ch == 'G' || ch == 'g') {
+            let rest = &sql[idx..];
+            let word_len = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .map(char::len_utf8)
+                .sum::<usize>();
+            let word = &rest[..word_len];
+            if word.eq_ignore_ascii_case("GO") {
+                let after = &rest[word_len..];
+                let after_trim_start = after.trim_start_matches([' ', '\t']);
+                let is_sep = after_trim_start.is_empty()
+                    || after_trim_start.starts_with('\n')
+                    || after_trim_start.starts_with("\r\n")
+                    || after_trim_start.starts_with("--");
+                if is_sep {
+                    // Consume through end of the GO line.
+                    for (_, next) in chars.by_ref() {
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                    let batch = std::mem::take(&mut current);
+                    if !batch.trim().is_empty() {
+                        batches.push(batch);
+                    }
+                    line_start = true;
+                    continue;
+                }
+            }
+        }
+        current.push(ch);
+        if !ch.is_whitespace() {
+            line_start = false;
+        }
+    }
+
+    if !current.trim().is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
 fn batch_returns_rows(sql: &str) -> bool {
     let mut saw_statement = false;
     for statement in split_statements(sql) {
@@ -813,6 +995,42 @@ async fn query_rows(
     stream.into_first_result().await.map_err(|e| e.to_string())
 }
 
+fn format_sql_datetime(value: chrono::NaiveDateTime) -> String {
+    let nanos = value.nanosecond();
+    if nanos == 0 {
+        return value.format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+    // datetime2 accepts at most 7 fractional digits (100ns).
+    let frac = nanos / 100;
+    let mut text = format!("{}.{:07}", value.format("%Y-%m-%d %H:%M:%S"), frac);
+    while text.ends_with('0') {
+        text.pop();
+    }
+    text
+}
+
+fn format_sql_time(value: chrono::NaiveTime) -> String {
+    let nanos = value.nanosecond();
+    if nanos == 0 {
+        return value.format("%H:%M:%S").to_string();
+    }
+    let frac = nanos / 100;
+    let mut text = format!("{}.{:07}", value.format("%H:%M:%S"), frac);
+    while text.ends_with('0') {
+        text.pop();
+    }
+    text
+}
+
+fn format_sql_offset(offset: chrono::FixedOffset) -> String {
+    let total = offset.local_minus_utc();
+    let sign = if total >= 0 { '+' } else { '-' };
+    let abs = total.unsigned_abs();
+    let hours = abs / 3600;
+    let minutes = (abs % 3600) / 60;
+    format!("{sign}{hours:02}:{minutes:02}")
+}
+
 fn cell(row: &tiberius::Row, index: usize) -> Option<String> {
     macro_rules! try_ty {
         ($ty:ty, $map:expr) => {
@@ -841,16 +1059,30 @@ fn cell(row: &tiberius::Row, index: usize) -> Option<String> {
     });
     try_ty!(uuid::Uuid, |value: uuid::Uuid| value.to_string());
     try_ty!(chrono::NaiveDateTime, |value: chrono::NaiveDateTime| {
-        value.format("%Y-%m-%d %H:%M:%S%.f").to_string()
+        format_sql_datetime(value)
     });
     try_ty!(chrono::NaiveDate, |value: chrono::NaiveDate| value
+        .format("%Y-%m-%d")
         .to_string());
     try_ty!(chrono::NaiveTime, |value: chrono::NaiveTime| {
-        value.format("%H:%M:%S%.f").to_string()
+        format_sql_time(value)
     });
+    try_ty!(
+        chrono::DateTime<chrono::FixedOffset>,
+        |value: chrono::DateTime<chrono::FixedOffset>| {
+            format!(
+                "{} {}",
+                format_sql_datetime(value.naive_local()),
+                format_sql_offset(*value.offset())
+            )
+        }
+    );
     try_ty!(chrono::DateTime<chrono::Utc>, |value: chrono::DateTime<
         chrono::Utc,
-    >| { value.to_rfc3339() });
+    >| {
+        // Avoid RFC3339 (`T`, `Z`) — rollback INSERT/UPDATE then fails conversion.
+        format!("{} +00:00", format_sql_datetime(value.naive_utc()))
+    });
     try_ty!(&[u8], |bytes: &[u8]| {
         let mut hex = String::from("0x");
         for byte in bytes {
@@ -904,7 +1136,21 @@ fn format_type(name: &str, max_length: i32, precision: i32, scale: i32) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{batch_changes_transaction, batch_returns_rows};
+    use super::{batch_changes_transaction, batch_returns_rows, split_go_batches};
+
+    #[test]
+    fn splits_ssms_go_batches_without_sending_go() {
+        let batches = split_go_batches(
+            "IF DB_ID(N'db') IS NULL\n    CREATE DATABASE [db];\nGO\nUSE [db];\nGO\n\nCREATE TABLE [dbo].[T]([Id] int);",
+        );
+        assert_eq!(batches.len(), 3);
+        assert!(batches[0].contains("CREATE DATABASE"));
+        assert!(!batches[0].to_ascii_uppercase().contains("\nGO"));
+        assert!(batches[1].contains("USE [db]"));
+        assert!(batches[2].contains("CREATE TABLE"));
+        assert!(split_go_batches("SELECT 'GO'\nGO\nSELECT 1").len() >= 2);
+        assert_eq!(split_go_batches("SELECT goo FROM t").len(), 1);
+    }
 
     #[test]
     fn plain_writes_keep_their_row_counts() {

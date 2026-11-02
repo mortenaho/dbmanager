@@ -18,7 +18,7 @@ export type SqlSnippet = {
 
 export type SqlSuggestion = {
   label: string;
-  kind: "snippet" | "function" | "database" | "schema" | "table" | "view" | "column" | "routine";
+  kind: "snippet" | "function" | "database" | "schema" | "table" | "view" | "column" | "routine" | "keyword";
   insertText: string;
   filterText: string;
   detail: string;
@@ -119,6 +119,62 @@ const COLUMN_KEYWORDS = new Set(["SELECT", "WHERE", "SET", "ON", "HAVING", "RETU
 const DATABASE_KEYWORDS = new Set(["USE", "DATABASE"]);
 const ROUTINE_KEYWORDS = new Set(["EXEC", "EXECUTE", "CALL"]);
 
+/** Predicates offered after a column/expression in WHERE / ON / HAVING / SET. */
+const CONDITION_OPS: Array<{
+  label: string;
+  detail: string;
+  documentation: string;
+  insertText: string;
+  filterText: string;
+  when: "compare" | "logic" | "any";
+}> = [
+  { label: "LIKE", detail: "LIKE", documentation: "Pattern match", insertText: "LIKE '${1:%}'", filterText: "like", when: "compare" },
+  { label: "NOT LIKE", detail: "NOT LIKE", documentation: "Negated pattern match", insertText: "NOT LIKE '${1:%}'", filterText: "not like", when: "compare" },
+  { label: "IS NULL", detail: "IS NULL", documentation: "Null check", insertText: "IS NULL", filterText: "is null", when: "compare" },
+  { label: "IS NOT NULL", detail: "IS NOT NULL", documentation: "Not-null check", insertText: "IS NOT NULL", filterText: "is not null", when: "compare" },
+  { label: "IN", detail: "IN", documentation: "Match any value in a list", insertText: "IN (${1})", filterText: "in", when: "compare" },
+  { label: "NOT IN", detail: "NOT IN", documentation: "Exclude values in a list", insertText: "NOT IN (${1})", filterText: "not in", when: "compare" },
+  { label: "BETWEEN", detail: "BETWEEN", documentation: "Inclusive range", insertText: "BETWEEN ${1} AND ${2}", filterText: "between", when: "compare" },
+  { label: "EXISTS", detail: "EXISTS", documentation: "Subquery existence check", insertText: "EXISTS (${1})", filterText: "exists", when: "any" },
+  { label: "=", detail: "=", documentation: "Equals", insertText: "= ${1}", filterText: "eq equals", when: "compare" },
+  { label: "<>", detail: "<>", documentation: "Not equal", insertText: "<> ${1}", filterText: "ne not equal <>", when: "compare" },
+  { label: "!=", detail: "!=", documentation: "Not equal", insertText: "!= ${1}", filterText: "ne not equal !=", when: "compare" },
+  { label: "<", detail: "<", documentation: "Less than", insertText: "< ${1}", filterText: "lt less", when: "compare" },
+  { label: ">", detail: ">", documentation: "Greater than", insertText: "> ${1}", filterText: "gt greater", when: "compare" },
+  { label: "<=", detail: "<=", documentation: "Less or equal", insertText: "<= ${1}", filterText: "le less equal", when: "compare" },
+  { label: ">=", detail: ">=", documentation: "Greater or equal", insertText: ">= ${1}", filterText: "ge greater equal", when: "compare" },
+  { label: "AND", detail: "AND", documentation: "Combine conditions", insertText: "AND ", filterText: "and", when: "logic" },
+  { label: "OR", detail: "OR", documentation: "Alternate conditions", insertText: "OR ", filterText: "or", when: "logic" },
+  { label: "NOT", detail: "NOT", documentation: "Negate the next condition", insertText: "NOT ", filterText: "not", when: "any" },
+];
+
+/** Continuations after a FROM / JOIN table reference (not more tables/databases). */
+const TABLE_FOLLOW_OPS: Array<{
+  label: string;
+  detail: string;
+  documentation: string;
+  insertText: string;
+  filterText: string;
+  contexts: Array<"from" | "join" | "update" | "into">;
+}> = [
+  { label: "WHERE", detail: "WHERE", documentation: "Filter rows", insertText: "WHERE ", filterText: "where", contexts: ["from", "join", "update"] },
+  { label: "INNER JOIN", detail: "INNER JOIN", documentation: "Inner join another table", insertText: "INNER JOIN ${1:table} ON ${2:condition}", filterText: "inner join", contexts: ["from", "join"] },
+  { label: "LEFT JOIN", detail: "LEFT JOIN", documentation: "Left outer join", insertText: "LEFT JOIN ${1:table} ON ${2:condition}", filterText: "left join left outer", contexts: ["from", "join"] },
+  { label: "RIGHT JOIN", detail: "RIGHT JOIN", documentation: "Right outer join", insertText: "RIGHT JOIN ${1:table} ON ${2:condition}", filterText: "right join right outer", contexts: ["from", "join"] },
+  { label: "FULL JOIN", detail: "FULL JOIN", documentation: "Full outer join", insertText: "FULL JOIN ${1:table} ON ${2:condition}", filterText: "full join full outer", contexts: ["from", "join"] },
+  { label: "CROSS JOIN", detail: "CROSS JOIN", documentation: "Cartesian join", insertText: "CROSS JOIN ${1:table}", filterText: "cross join", contexts: ["from", "join"] },
+  { label: "JOIN", detail: "JOIN", documentation: "Join another table", insertText: "JOIN ${1:table} ON ${2:condition}", filterText: "join", contexts: ["from", "join"] },
+  { label: "ON", detail: "ON", documentation: "Join condition", insertText: "ON ", filterText: "on", contexts: ["join"] },
+  { label: "GROUP BY", detail: "GROUP BY", documentation: "Group rows", insertText: "GROUP BY ${1:column}", filterText: "group by", contexts: ["from", "join"] },
+  { label: "ORDER BY", detail: "ORDER BY", documentation: "Sort rows", insertText: "ORDER BY ${1:column}", filterText: "order by", contexts: ["from", "join"] },
+  { label: "HAVING", detail: "HAVING", documentation: "Filter groups", insertText: "HAVING ", filterText: "having", contexts: ["from", "join"] },
+  { label: "UNION", detail: "UNION", documentation: "Combine result sets", insertText: "UNION\n", filterText: "union", contexts: ["from", "join"] },
+  { label: "UNION ALL", detail: "UNION ALL", documentation: "Combine result sets keeping duplicates", insertText: "UNION ALL\n", filterText: "union all", contexts: ["from", "join"] },
+  { label: "SET", detail: "SET", documentation: "Assign column values", insertText: "SET ${1:column} = ${2:value}", filterText: "set", contexts: ["update"] },
+  { label: "VALUES", detail: "VALUES", documentation: "Insert value list", insertText: "VALUES (${1})", filterText: "values", contexts: ["into"] },
+  { label: "SELECT", detail: "SELECT", documentation: "Insert from query", insertText: "SELECT ${1:*}\nFROM ${2:table}", filterText: "select", contexts: ["into"] },
+];
+
 type Clause = "database" | "table" | "column" | "routine" | "statement";
 
 type Tok = {
@@ -155,18 +211,19 @@ export function buildSqlSuggestions(input: {
   const before = located.text.slice(0, located.cursor);
   const tokens = tokenize(located.text);
   const beforeTokens = tokens.filter((token) => token.start < located.cursor);
+  const completeTokens = beforeTokens.filter((token) => !(token.kind !== "symbol" && token.end >= located.cursor));
   const dotted = dottedTail(before);
   const word = dotted ? dotted.word : trailingWord(before);
-  const clause = clauseAt(beforeTokens.filter((token) => !(token.kind !== "symbol" && token.end >= located.cursor)));
+  const clause = clauseAt(completeTokens);
   const refs = referencedTables(tokens, input.catalog);
 
   if (dotted) {
     return unique(membersAfterDot(dotted.parts, clause, input.catalog, refs, word));
   }
   if (clause === "database") return unique(databases(input.catalog, word));
-  if (clause === "table") return unique(tableClause(input.catalog, word));
+  if (clause === "table") return unique(tableClause(input.catalog, word, completeTokens));
   if (clause === "routine") return unique(routines(input.catalog, word));
-  if (clause === "column") return unique(columnClause(input.catalog, refs, input.functions, word));
+  if (clause === "column") return unique(columnClause(input.catalog, refs, input.functions, word, completeTokens));
   return unique(statementClause(input.snippets, input.functions, word));
 }
 
@@ -189,20 +246,207 @@ function statementClause(snippets: SqlSnippet[], functions: string[], word: stri
   return items;
 }
 
-function columnClause(catalog: SqlCatalog, refs: TableRef[], functions: string[], word: string): SqlSuggestion[] {
+function columnClause(
+  catalog: SqlCatalog,
+  refs: TableRef[],
+  functions: string[],
+  word: string,
+  tokens: Tok[],
+): SqlSuggestion[] {
   const items: SqlSuggestion[] = [];
-  if (refs.length) items.push(...columnsOf(catalog, refs, word, "1"));
-  else items.push(...tablesOf(catalog, catalog.tables, word, false, "2"));
-  if (word) items.push(...functionsOf(functions, word, "3"));
+  const inPredicate = inPredicateClause(tokens);
+  const wantCompare = inPredicate && expectCompareOp(tokens, refs);
+  const wantLogic = inPredicate && expectLogicOp(tokens);
+  if (wantCompare || wantLogic || (inPredicate && word)) {
+    items.push(...conditionOps(word, wantCompare, wantLogic));
+  }
+  if (!wantCompare) {
+    if (refs.length) items.push(...columnsOf(catalog, refs, word, "2"));
+    else items.push(...tablesOf(catalog, catalog.tables, word, false, "3"));
+    if (word) items.push(...functionsOf(functions, word, "4"));
+  } else if (word) {
+    // Still allow column names if the user keeps typing an identifier after one.
+    if (refs.length) items.push(...columnsOf(catalog, refs, word, "3"));
+    items.push(...functionsOf(functions, word, "4"));
+  }
   return items;
 }
 
-function tableClause(catalog: SqlCatalog, word: string): SqlSuggestion[] {
+function conditionOps(word: string, wantCompare: boolean, wantLogic: boolean): SqlSuggestion[] {
+  const items: SqlSuggestion[] = [];
+  for (const op of CONDITION_OPS) {
+    if (op.when === "compare" && !(wantCompare || word)) continue;
+    if (op.when === "logic" && !(wantLogic || word)) continue;
+    if (!matchesCondition(word, op.label, op.filterText)) continue;
+    const sortBucket = op.when === "logic" ? "0" : wantCompare ? "0" : "1";
+    items.push({
+      label: op.label,
+      kind: "keyword",
+      insertText: op.insertText,
+      filterText: `${op.label} ${op.filterText}`,
+      detail: op.detail,
+      documentation: op.documentation,
+      snippet: op.insertText.includes("${"),
+      sort: `${sortBucket}${op.label}`,
+    });
+  }
+  return items;
+}
+
+function matchesCondition(word: string, label: string, filterText: string): boolean {
+  if (!word) return true;
+  const needle = word.toLowerCase();
+  if (label.toLowerCase().startsWith(needle)) return true;
+  if (filterText.toLowerCase().startsWith(needle)) return true;
+  // Allow typing "isn" → IS NOT NULL, "notl" → NOT LIKE
+  const compact = label.toLowerCase().replace(/\s+/g, "");
+  if (compact.startsWith(needle.replace(/\s+/g, ""))) return true;
+  return filterText
+    .toLowerCase()
+    .split(/\s+/)
+    .some((part) => part.startsWith(needle));
+}
+
+function lastNonSymbol(tokens: Tok[]): Tok | null {
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    if (tokens[index].kind !== "symbol" || tokens[index].text === ")") return tokens[index];
+  }
+  return null;
+}
+
+/** True inside WHERE / HAVING / ON / SET (and after AND / OR), not in the SELECT list. */
+function inPredicateClause(tokens: Tok[]): boolean {
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index];
+    if (token.kind !== "keyword") continue;
+    if (["WHERE", "HAVING", "ON", "AND", "OR", "WHEN", "SET"].includes(token.upper)) return true;
+    if (
+      ["SELECT", "FROM", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "GROUP", "ORDER", "INSERT", "INTO", "VALUES", "UPDATE", "DELETE"].includes(
+        token.upper,
+      )
+    ) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** After a column / expression, offer LIKE / IS NULL / = / … */
+function expectCompareOp(tokens: Tok[], refs: TableRef[]): boolean {
+  const last = lastNonSymbol(tokens);
+  if (!last) return false;
+  if (last.text === ")") return true;
+  if (last.kind !== "ident") return false;
+  // Bare table alias usually continues with ".column", not an operator.
+  if (refs.some((ref) => ref.alias && same(ref.alias, last.text))) return false;
+  return true;
+}
+
+/** After IS NULL / IS NOT NULL (and similar finished predicates), offer AND / OR. */
+function expectLogicOp(tokens: Tok[]): boolean {
+  const last = lastNonSymbol(tokens);
+  if (!last) return false;
+  return last.upper === "NULL";
+}
+
+function tableClause(catalog: SqlCatalog, word: string, tokens: Tok[]): SqlSuggestion[] {
+  if (afterTableRef(tokens, catalog)) {
+    return tableFollowOps(word, tokens);
+  }
   return [
     ...tablesOf(catalog, catalog.tables, word, false, "1"),
     ...schemas(catalog, word, "2"),
     ...databases(catalog, word).map((item) => ({ ...item, sort: `3${item.label}` })),
   ];
+}
+
+function tableFollowOps(word: string, tokens: Tok[]): SqlSuggestion[] {
+  const context = tableFollowContext(tokens);
+  const items: SqlSuggestion[] = [];
+  for (const op of TABLE_FOLLOW_OPS) {
+    if (!op.contexts.includes(context)) continue;
+    if (op.label === "ON" && !needsJoinOn(tokens)) continue;
+    if (!matchesCondition(word, op.label, op.filterText)) continue;
+    items.push({
+      label: op.label,
+      kind: "keyword",
+      insertText: op.insertText,
+      filterText: `${op.label} ${op.filterText}`,
+      detail: op.detail,
+      documentation: op.documentation,
+      snippet: op.insertText.includes("${"),
+      sort: `0${op.label}`,
+    });
+  }
+  return items;
+}
+
+/** Last FROM / JOIN / UPDATE / INTO that introduced the current table slot. */
+function tableFollowContext(tokens: Tok[]): "from" | "join" | "update" | "into" {
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index];
+    if (token.kind !== "keyword") continue;
+    if (token.upper === "UPDATE") return "update";
+    if (token.upper === "INTO") return "into";
+    if (token.upper === "JOIN" || token.upper === "APPLY") return "join";
+    if (token.upper === "FROM") return "from";
+  }
+  return "from";
+}
+
+/**
+ * True once a table name is present after FROM/JOIN/UPDATE/INTO
+ * (optional alias included). A trailing comma means another table is expected.
+ * A bare schema/database name alone still expects ".table", so stay in table mode.
+ */
+function afterTableRef(tokens: Tok[], catalog: SqlCatalog): boolean {
+  let intro = -1;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind !== "keyword" || !TABLE_KEYWORDS.has(token.upper)) continue;
+    if (token.upper === "TABLE") {
+      const previous = previousKeyword(tokens, index);
+      if (!previous || !["CREATE", "ALTER", "DROP", "TRUNCATE"].includes(previous)) continue;
+    }
+    intro = index;
+  }
+  if (intro < 0) return false;
+  const qualified = readQualified(tokens, intro + 1);
+  if (!qualified.parts.length) return false;
+  let index = qualified.next;
+  let hasAlias = false;
+  if (tokens[index]?.upper === "AS" && tokens[index + 1]?.kind === "ident") {
+    index += 2;
+    hasAlias = true;
+  } else if (tokens[index]?.kind === "ident") {
+    index += 1;
+    hasAlias = true;
+  }
+  if (tokens[index]?.text === ",") return false;
+  if (hasAlias) return true;
+  if (matchQualified(qualified.parts, catalog).length) return true;
+  // Single unknown/schema/db token without alias → keep suggesting tables.
+  if (qualified.parts.length === 1) {
+    const name = qualified.parts[0];
+    if (schemaNames(catalog).some((schema) => same(schema, name))) return false;
+    if (isDatabase(catalog, name)) return false;
+  }
+  return qualified.parts.length >= 2;
+}
+
+function needsJoinOn(tokens: Tok[]): boolean {
+  let joinAt = -1;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind !== "keyword") continue;
+    if (token.upper === "JOIN" || token.upper === "APPLY") joinAt = index;
+    if (joinAt >= 0 && token.upper === "ON") joinAt = -1;
+    if (["WHERE", "GROUP", "ORDER", "HAVING", "UNION", "EXCEPT", "INTERSECT"].includes(token.upper)) {
+      break;
+    }
+  }
+  if (joinAt < 0) return false;
+  return readQualified(tokens, joinAt + 1).parts.length > 0;
 }
 
 function membersAfterDot(

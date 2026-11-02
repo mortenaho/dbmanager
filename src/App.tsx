@@ -23,6 +23,7 @@ import {
   scriptRoutine,
 } from "./api";
 import { schemaText, sqlWithNote } from "./ask";
+import { hasPrimaryMod, isLetterKey } from "./keyboard";
 import { AskDialog } from "./components/AskDialog";
 import { ConnectDialog } from "./components/ConnectDialog";
 import { DetailsPane, type DetailsTarget } from "./components/DetailsPane";
@@ -58,9 +59,10 @@ import {
   StopIcon,
   SunIcon,
 } from "./components/Icons";
+import { CreateDatabaseDialog } from "./components/CreateDatabaseDialog";
 import { ObjectExplorer } from "./components/ObjectExplorer";
 import { RenameDialog } from "./components/RenameDialog";
-import { ScriptDialog, type ScriptGenerateOptions } from "./components/ScriptDialog";
+import { ScriptDialog, type ScriptGenerateOptions, type ScriptPreset } from "./components/ScriptDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ResultsPane } from "./components/ResultsPane";
 import {
@@ -140,11 +142,12 @@ export default function App() {
   const [filter, setFilter] = useState("");
   const [context, setContext] = useState<{ connectionId: string; database: string } | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
+  const [createDbId, setCreateDbId] = useState<string | null>(null);
   const [scriptJob, setScriptJob] = useState<{
     connectionId: string;
     database: string;
     object: DbObject | null;
-    preset: "schema" | "backup" | "custom";
+    preset: ScriptPreset;
   } | null>(null);
   const [explorerReload, setExplorerReload] = useState(0);
   const [notice, setNotice] = useState("");
@@ -162,6 +165,8 @@ export default function App() {
   const tableDesignRef = useRef<string | null>(null);
   const editors = useRef(new Map<string, Parameters<OnMount>[0]>());
   const runTokens = useRef(new Map<string, number>());
+  const openScriptFromPathRef = useRef<(path: string) => Promise<void>>(async () => undefined);
+  const openScriptContentsRef = useRef<(name: string, contents: string) => void>(() => undefined);
   detailsActiveRef.current = detailsActive;
   detailsRef.current = details;
   designActiveRef.current = designActive;
@@ -227,6 +232,7 @@ export default function App() {
         else if (helpOpen) setHelpOpen(false);
         else if (aboutOpen) setAboutOpen(false);
         else if (historyOpen) setHistoryOpen(false);
+        else if (createDbId) setCreateDbId(null);
         else if (rename) setRename(null);
         else if (scriptJob) setScriptJob(null);
         else if (connectOpen) setConnectOpen(false);
@@ -241,9 +247,9 @@ export default function App() {
         setHelpOpen((open) => !open);
         return;
       }
-      if (connectOpen || aboutOpen || rename || scriptJob || historyOpen || settingsOpen || helpOpen) return;
+      if (connectOpen || aboutOpen || createDbId || rename || scriptJob || historyOpen || settingsOpen || helpOpen) return;
       const typing = event.target instanceof HTMLElement && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA");
-      if ((event.altKey && (event.key === "Pause" || event.key === "Cancel" || event.code === "Pause")) || ((event.ctrlKey || event.metaKey) && event.key === "Break")) {
+      if ((event.altKey && (event.key === "Pause" || event.key === "Cancel" || event.code === "Pause")) || (hasPrimaryMod(event) && event.key === "Break")) {
         event.preventDefault();
         void cancelRef.current();
         return;
@@ -251,32 +257,42 @@ export default function App() {
       if (event.key === "F5" && event.ctrlKey) {
         event.preventDefault();
         void parseRef.current();
-      } else if (event.key === "F5" || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "e")) {
+      } else if (event.key === "F5" || (hasPrimaryMod(event) && isLetterKey(event, "e"))) {
         event.preventDefault();
         void runRef.current();
-      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
+      } else if (hasPrimaryMod(event) && isLetterKey(event, "n")) {
         event.preventDefault();
         newQueryRef.current();
-      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "w" && !typing) {
+      } else if (hasPrimaryMod(event) && isLetterKey(event, "w") && !typing) {
         event.preventDefault();
         if (tableDesignRef.current) closeTab(tableDesignRef.current);
         else if (designActiveRef.current) closeTab("design");
         else if (detailsActiveRef.current) closeTab("details");
         else if (activeRef.current) closeTab(activeRef.current);
-      } else if (event.shiftKey && event.altKey && event.key.toLowerCase() === "f") {
+      } else if (event.shiftKey && event.altKey && isLetterKey(event, "f")) {
         event.preventDefault();
         formatRef.current();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [connectOpen, aboutOpen, helpOpen, rename, scriptJob, historyOpen, settingsOpen]);
+  }, [connectOpen, aboutOpen, helpOpen, createDbId, rename, scriptJob, historyOpen, settingsOpen]);
 
   useEffect(() => {
     const isScriptPath = (path: string) => /\.(sql|txt|pgsql|mysql|mssql)$/i.test(path);
+    const normalizePath = (path: string) => {
+      const trimmed = path.trim();
+      if (!trimmed.toLowerCase().startsWith("file:")) return trimmed;
+      try {
+        return decodeURIComponent(trimmed.replace(/^file:\/\//i, "").replace(/^\/([A-Za-z]:)/, "$1"));
+      } catch {
+        return trimmed.replace(/^file:\/\//i, "");
+      }
+    };
     const tauri = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let html5Fallback = true;
 
     if (tauri) {
       void (async () => {
@@ -285,41 +301,52 @@ export default function App() {
           if (disposed) return;
           unlisten = await getCurrentWebview().onDragDropEvent((event) => {
             if (event.payload.type === "enter") {
-              setDropActive(event.payload.paths.some(isScriptPath));
+              setDropActive(event.payload.paths.some((path) => isScriptPath(normalizePath(path))));
+            } else if (event.payload.type === "over") {
+              setDropActive(true);
             } else if (event.payload.type === "drop") {
               setDropActive(false);
-              for (const path of event.payload.paths) {
-                if (isScriptPath(path)) void openScriptFromPath(path);
+              const scripts = event.payload.paths.map(normalizePath).filter(isScriptPath);
+              if (!scripts.length) {
+                showNotice("Drop a .sql script to open it in a new tab.");
+                return;
               }
+              for (const path of scripts) void openScriptFromPathRef.current(path);
             } else if (event.payload.type === "leave") {
               setDropActive(false);
             }
           });
+          // Prefer the native Tauri drop path once it is wired.
+          html5Fallback = false;
         } catch {
-          // Fall through to HTML5 handlers if the webview API is unavailable.
+          html5Fallback = true;
         }
       })();
     }
 
     const onDragOver = (event: DragEvent) => {
-      if (tauri || ![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+      if (!html5Fallback || ![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
       event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
       setDropActive(true);
     };
     const onDragLeave = (event: DragEvent) => {
-      if (tauri || event.relatedTarget) return;
+      if (!html5Fallback || event.relatedTarget) return;
       setDropActive(false);
     };
     const onDrop = (event: DragEvent) => {
-      if (tauri || ![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+      if (!html5Fallback || ![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
       event.preventDefault();
       setDropActive(false);
-      const files = [...(event.dataTransfer?.files ?? [])];
+      const files = [...(event.dataTransfer?.files ?? [])].filter((file) => isScriptPath(file.name));
+      if (!files.length) {
+        showNotice("Drop a .sql script to open it in a new tab.");
+        return;
+      }
       for (const file of files) {
-        if (!isScriptPath(file.name)) continue;
         void file
           .text()
-          .then((contents) => openScriptContents(file.name, contents))
+          .then((contents) => openScriptContentsRef.current(file.name, contents))
           .catch((reason) => showNotice(errorText(reason)));
       }
     };
@@ -761,6 +788,8 @@ export default function App() {
       showNotice(errorText(reason));
     }
   }
+  openScriptContentsRef.current = openScriptContents;
+  openScriptFromPathRef.current = openScriptFromPath;
 
   async function openScriptFile(): Promise<void> {
     const tauri = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
@@ -889,7 +918,7 @@ export default function App() {
     connectionId: string,
     database: string,
     object: DbObject | null,
-    preset: "schema" | "backup" | "custom",
+    preset: ScriptPreset,
   ) {
     setScriptJob({ connectionId, database, object, preset });
     setMenu(null);
@@ -902,7 +931,7 @@ export default function App() {
     mode: "create" | "insert" | "both" | "schema" | "backup",
     options?: ScriptGenerateOptions,
   ) {
-    if (!options && (mode === "schema" || mode === "backup")) {
+    if (!options) {
       openScriptDialog(connectionId, database, object, mode);
       return;
     }
@@ -914,8 +943,8 @@ export default function App() {
       const request = options ?? {
         includeCreate: mode !== "insert",
         includeData: mode === "insert" || mode === "both",
-        includeDatabase: false,
-        includeSchemas: false,
+        includeDatabase: true,
+        includeSchemas: true,
         includeTables: true,
         includeViews: true,
         includeProcedures: true,
@@ -924,20 +953,22 @@ export default function App() {
           ? [{ schema: object.schema, name: object.name, kind: object.kind }]
           : null,
       };
+      const selected = request.selected ?? [];
+      const single = selected.length === 1 ? selected[0] : null;
       const result = await generateScript(
         connectionId,
         database,
-        object?.schema ?? "",
-        object?.name ?? database,
-        object?.kind ?? "database",
+        single?.schema ?? object?.schema ?? "",
+        single?.name ?? object?.name ?? database,
+        "database",
         request.includeCreate,
         request.includeData,
         request,
       );
       const notes = result.warnings.length ? `\n-- ${result.warnings.join("\n-- ")}\n` : "";
       const sql = `${result.sql}${notes}`;
-      const fileName = object
-        ? `${object.name}.sql`
+      const fileName = single
+        ? `${single.name}.sql`
         : `${database}-${request.includeData ? "backup" : "script"}.sql`;
       if (request.includeData || sql.length > 1_500_000) {
         const saved = await saveSqlFile(fileName, sql);
@@ -949,12 +980,7 @@ export default function App() {
               : `Saved ${fileName}.`,
         );
       } else {
-        const kind = object?.kind.toLowerCase() ?? "";
-        const title =
-          object && (kind === "view" || kind === "procedure" || kind === "function")
-            ? routineTitle(connectionId, object)
-            : fileName;
-        openTab(connectionId, database, sql.endsWith("\n") ? sql : `${sql}\n`, title);
+        openTab(connectionId, database, sql.endsWith("\n") ? sql : `${sql}\n`, fileName);
         if (result.warnings.length) {
           showNotice(`Script opened with ${result.warnings.length} warning(s).`);
         }
@@ -1449,6 +1475,7 @@ export default function App() {
               onRenameTable={(connectionId, database, schema, name) =>
                 setRename({ kind: "table", connectionId, database, schema, name })
               }
+              onCreateDatabase={(connectionId) => setCreateDbId(connectionId)}
               onDesignTable={(connectionId, database, schema, name) => openTableDesign(connectionId, database, schema, name)}
               onScriptRoutine={(connectionId, database, object) => void openRoutine(connectionId, database, object)}
               onGenerateScript={(connectionId, database, object, mode) =>
@@ -1899,6 +1926,21 @@ export default function App() {
           initialError={connectError}
           onCancel={() => setConnectOpen(false)}
           onConnect={handleConnect}
+        />
+      ) : null}
+      {createDbId ? (
+        <CreateDatabaseDialog
+          connectionId={createDbId}
+          onCancel={() => setCreateDbId(null)}
+          onCreated={(databases) => {
+            const id = createDbId;
+            setConnections((current) =>
+              current.map((connection) => (connection.id === id ? { ...connection, databases } : connection)),
+            );
+            setExplorerReload((value) => value + 1);
+            setCreateDbId(null);
+            showNotice("Database created.");
+          }}
         />
       ) : null}
       {rename ? (

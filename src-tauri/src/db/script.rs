@@ -158,12 +158,15 @@ pub fn create_database_sql(engine: EngineKind, database: &str) -> Option<String>
         return None;
     }
     match engine {
-        EngineKind::Postgres => Some(format!(
-            "CREATE DATABASE {};\n",
-            quote_pg(database)
-        )),
+        EngineKind::Postgres => {
+            // PostgreSQL cannot CREATE DATABASE inside a DO block; emit CREATE for empty servers.
+            Some(format!(
+                "-- Run while connected to postgres/template1 if the database is missing.\nCREATE DATABASE {};\n",
+                quote_pg(database)
+            ))
+        }
         EngineKind::Mysql => Some(format!(
-            "CREATE DATABASE {};\nUSE {};\n",
+            "CREATE DATABASE IF NOT EXISTS {};\nUSE {};\n",
             quote_mysql(database),
             quote_mysql(database)
         )),

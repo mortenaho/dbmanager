@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { hasPrimaryMod, isLetterKey } from "../keyboard";
 import type { QueryMessage, ResultSet } from "../types";
 import { CopyIcon, CopyPlainIcon, ExcelIcon, JsonIcon, MessagesIcon, ResultsIcon, SelectAllIcon } from "./Icons";
 
@@ -495,14 +496,13 @@ function ResultGrid({
             setMenu(null);
           }}
           onKeyDown={(event) => {
-            const key = event.key.toLowerCase();
-            if ((event.ctrlKey || event.metaKey) && key === "a") {
+            if (hasPrimaryMod(event) && isLetterKey(event, "a")) {
               event.preventDefault();
               event.stopPropagation();
               selectAll();
               return;
             }
-            if ((event.ctrlKey || event.metaKey) && key === "c") {
+            if (hasPrimaryMod(event) && isLetterKey(event, "c")) {
               event.preventDefault();
               event.stopPropagation();
               void copySelection(!event.shiftKey);

@@ -822,8 +822,8 @@ kbd {
 }
 .dialog.small { width: 420px; }
 .dialog.script-dialog {
-  width: min(720px, calc(100vw - 48px));
-  max-height: min(860px, calc(100vh - 48px));
+  width: min(920px, calc(100vw - 48px));
+  max-height: min(900px, calc(100vh - 48px));
   display: flex;
   flex-direction: column;
 }
@@ -850,17 +850,36 @@ kbd {
   padding-top: 4px;
   border-top: 1px solid var(--ce5e5e5);
 }
+.script-pickers {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 280px;
+  flex: 1;
+}
+.script-pickers:has(> :only-child) {
+  grid-template-columns: 1fr;
+}
 .script-picker {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-height: 220px;
   flex: 1;
+  min-width: 0;
+}
+.script-schema-picker {
+  min-width: 0;
 }
 .script-picker-bar {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+.script-picker-bar .spacer { flex: 1; }
+.script-picker-bar strong {
+  font-size: 12px;
+  font-weight: 600;
 }
 .script-picker-bar input {
   flex: 1;
@@ -878,23 +897,37 @@ kbd {
 .script-object-list {
   flex: 1;
   min-height: 180px;
-  max-height: 320px;
+  max-height: 360px;
   overflow: auto;
   border: 1px solid var(--border);
   background: var(--cffffff);
   padding: 4px 0;
 }
+.script-object-list.compact { max-height: 360px; }
 .script-object-row {
   display: flex;
   width: 100%;
   padding: 3px 10px;
   box-sizing: border-box;
 }
+.script-object-row.nested { padding-left: 28px; }
+.script-object-row.script-group-head {
+  background: var(--cf7f7f7);
+  font-weight: 600;
+  border-top: 1px solid var(--ceeeeee);
+  border-bottom: 1px solid var(--ceeeeee);
+}
 .script-object-row:hover { background: var(--hover); }
 .script-object-row .kind {
   width: 72px;
   color: var(--muted);
   flex: none;
+  text-transform: lowercase;
+}
+.script-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
 }
 .script-count { color: var(--muted); align-self: center; }
 .drop-hint {
@@ -1646,6 +1679,22 @@ kbd {
 }
 .table-design-bar button:hover:not(:disabled) { background: var(--hover); border-color: var(--cc2ddf5); }
 .table-design-bar .spacer { flex: 1; }
+.table-design-bar .td-schema {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  color: var(--c333333);
+  font-size: 12px;
+}
+.table-design-bar .td-schema input {
+  width: 120px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0 6px;
+  background: var(--cffffff);
+}
 .table-design-bar .diagram-go {
   background: var(--blue);
   color: var(--on-accent);

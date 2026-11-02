@@ -200,6 +200,24 @@ pub async fn list_all_columns(
 }
 
 #[tauri::command]
+pub async fn create_database(
+    history: State<'_, HistoryDb>,
+    state: State<'_, DbState>,
+    connection_id: String,
+    name: String,
+) -> Result<Vec<String>, String> {
+    let session = session(&state, &connection_id).await?;
+    let creds = session.creds.clone();
+    let mut conn = session.conn.lock().await;
+    let result = crate::db::create_database(&mut conn, &creds, name.trim()).await;
+    match &result {
+        Ok(_) => history.note("info", "database", &format!("Created database `{}`.", name.trim())),
+        Err(error) => history.note("error", "database", &format!("Create database failed: {error}")),
+    }
+    result
+}
+
+#[tauri::command]
 pub async fn rename_object(
     history: State<'_, HistoryDb>,
     state: State<'_, DbState>,

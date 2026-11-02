@@ -40,6 +40,7 @@ pub fn run() {
             commands::list_objects,
             commands::list_columns,
             commands::list_all_columns,
+            commands::create_database,
             commands::rename_object,
             commands::script_routine,
             commands::generate_script,

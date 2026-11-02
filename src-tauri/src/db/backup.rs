@@ -348,17 +348,197 @@ fn sql_literal(engine: EngineKind, value: Option<&str>) -> String {
     if engine == EngineKind::Mssql && is_hex_literal(value) {
         return value.to_string();
     }
-    let escaped = value.replace('\'', "''");
-    if engine == EngineKind::Mssql {
-        format!("N'{escaped}'")
-    } else {
-        format!("'{escaped}'")
+    if is_plain_number(value) {
+        return value.to_string();
+    }
+    let temporal = normalize_temporal_literal(value);
+    let rendered = temporal.as_deref().unwrap_or(value);
+    let escaped = match engine {
+        EngineKind::Mysql => rendered.replace('\\', "\\\\").replace('\'', "''"),
+        _ => rendered.replace('\'', "''"),
+    };
+    match engine {
+        // Temporal values must not use N'...' — SQL Server then treats them as
+        // unicode strings and datetime conversion fails on RFC3339 forms.
+        EngineKind::Mssql if temporal.is_some() && looks_like_timestamptz(rendered) => {
+            format!("CONVERT(datetimeoffset, '{escaped}')")
+        }
+        EngineKind::Mssql if temporal.is_some() => format!("'{escaped}'"),
+        EngineKind::Mssql => format!("N'{escaped}'"),
+        EngineKind::Postgres if looks_like_timestamptz(rendered) => {
+            format!("TIMESTAMPTZ '{escaped}'")
+        }
+        EngineKind::Postgres if looks_like_timestamp(rendered) => {
+            format!("TIMESTAMP '{escaped}'")
+        }
+        EngineKind::Postgres if looks_like_date(rendered) => format!("DATE '{escaped}'"),
+        EngineKind::Postgres if looks_like_time(rendered) => format!("TIME '{escaped}'"),
+        _ => format!("'{escaped}'"),
     }
 }
 
 fn is_hex_literal(value: &str) -> bool {
     let rest = value.strip_prefix("0x").unwrap_or("");
     !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn is_plain_number(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut chars = trimmed.chars().peekable();
+    if matches!(chars.peek(), Some('+' | '-')) {
+        chars.next();
+    }
+    let mut saw_digit = false;
+    let mut saw_dot = false;
+    let mut saw_exp = false;
+    for ch in chars {
+        match ch {
+            '0'..='9' => saw_digit = true,
+            '.' if !saw_dot && !saw_exp => saw_dot = true,
+            'e' | 'E' if saw_digit && !saw_exp => {
+                saw_exp = true;
+                saw_digit = false;
+            }
+            '+' | '-' if saw_exp && !saw_digit => {}
+            _ => return false,
+        }
+    }
+    saw_digit
+}
+
+/// Rewrite RFC3339 / high-precision timestamps into SQL-friendly literals.
+fn normalize_temporal_literal(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if looks_like_date(trimmed) || looks_like_time(trimmed) {
+        return Some(trimmed.to_string());
+    }
+    if !(trimmed.contains('-') && (trimmed.contains(':') || trimmed.contains('T') || trimmed.contains('t')))
+    {
+        return None;
+    }
+
+    let mut text = trimmed.to_string();
+    if let Some(idx) = text.find(['T', 't']) {
+        // Keep ISO date/time but prefer the SQL space separator.
+        if idx == 10 {
+            text.replace_range(idx..=idx, " ");
+        }
+    }
+    if text.ends_with('Z') || text.ends_with('z') {
+        text.pop();
+        text.push_str(" +00:00");
+    }
+
+    // Truncate fractional seconds to 7 digits (SQL Server datetime2 max).
+    if let Some(dot) = text.find('.') {
+        let after = &text[dot + 1..];
+        let frac_len = after
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .count();
+        if frac_len > 7 {
+            let keep = after.chars().take(7).collect::<String>();
+            let rest = after.chars().skip(frac_len).collect::<String>();
+            text = format!("{}{}{}", &text[..=dot], keep, rest);
+        }
+    }
+
+    // Prefer "+00:00" over "+0000" / "+00".
+    if let Some(pos) = text.rfind(['+', '-']) {
+        if pos > 10 {
+            let offset = &text[pos..];
+            if offset.len() == 5
+                && offset.chars().nth(3) != Some(':')
+                && offset[1..].chars().all(|ch| ch.is_ascii_digit())
+            {
+                text = format!(
+                    "{}{}{}:{}",
+                    &text[..pos],
+                    &offset[..3],
+                    &offset[3..4],
+                    &offset[4..]
+                );
+            }
+        }
+    }
+
+    if looks_like_timestamp(&text) || looks_like_timestamptz(&text) {
+        Some(text)
+    } else {
+        None
+    }
+}
+
+fn looks_like_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes.iter().enumerate().all(|(i, ch)| {
+            if matches!(i, 4 | 7) {
+                true
+            } else {
+                ch.is_ascii_digit()
+            }
+        })
+}
+
+fn looks_like_time(value: &str) -> bool {
+    let trimmed = value.trim().trim_start_matches('-');
+    let parts = trimmed.split(':').collect::<Vec<_>>();
+    if parts.len() < 2 || parts.len() > 3 {
+        return false;
+    }
+    parts[0].chars().all(|ch| ch.is_ascii_digit())
+        && !parts[0].is_empty()
+        && parts[1].len() == 2
+        && parts[1].chars().all(|ch| ch.is_ascii_digit())
+        && parts.get(2).map(|part| {
+            let (sec, frac) = part.split_once('.').unwrap_or((part, ""));
+            sec.len() == 2
+                && sec.chars().all(|ch| ch.is_ascii_digit())
+                && (frac.is_empty() || frac.chars().all(|ch| ch.is_ascii_digit()))
+        }) != Some(false)
+}
+
+fn looks_like_timestamp(value: &str) -> bool {
+    let split = value
+        .split_once(' ')
+        .or_else(|| value.split_once('T'))
+        .or_else(|| value.split_once('t'));
+    let Some((date, rest)) = split else {
+        return false;
+    };
+    if !looks_like_date(date) {
+        return false;
+    }
+    let time = rest
+        .split_whitespace()
+        .next()
+        .unwrap_or(rest)
+        .split(['+', '-'])
+        .next()
+        .unwrap_or(rest);
+    looks_like_time(time)
+}
+
+fn looks_like_timestamptz(value: &str) -> bool {
+    if !(value.contains('+') || value.ends_with('Z') || value.ends_with('z')) {
+        // Negative offsets: "... -05:00"
+        let Some((_, time_part)) = value.split_once(' ').or_else(|| value.split_once('T')) else {
+            return false;
+        };
+        if !time_part.contains('-') {
+            return false;
+        }
+    }
+    looks_like_timestamp(value)
 }
 
 fn parse_statement(
@@ -1710,6 +1890,31 @@ mod tests {
     }
 
     #[test]
+    fn restore_normalizes_rfc3339_datetimes_for_sql_server() {
+        let backup = RowBackup {
+            statement_index: 0,
+            kind: WriteKind::Update,
+            table_sql: "[dbo].[events]".into(),
+            columns: vec!["id".into(), "created_at".into()],
+            rows: vec![vec![
+                Some("1".into()),
+                Some("2024-01-15T10:30:00.123456789Z".into()),
+            ]],
+            key_columns: vec!["id".into()],
+            write_columns: vec!["created_at".into()],
+            identity_insert: false,
+            overriding_system: false,
+        };
+        let statements = restore_statements(EngineKind::Mssql, &[backup]);
+        assert_eq!(statements.len(), 1);
+        assert!(statements[0].contains(
+            "SET [created_at] = CONVERT(datetimeoffset, '2024-01-15 10:30:00.1234567 +00:00')"
+        ));
+        assert!(statements[0].contains("WHERE [id] = 1"));
+        assert!(!statements[0].contains("N'2024-01-15T"));
+    }
+
+    #[test]
     fn restore_puts_update_values_back_and_reinserts_deletes() {
         let update = RowBackup {
             statement_index: 1,
@@ -1739,12 +1944,12 @@ mod tests {
         let statements = restore_statements(EngineKind::Mssql, &[update]);
         assert_eq!(statements.len(), 2);
         assert!(statements[0].contains("SET [name] = N'O''Brien'"));
-        assert!(statements[0].contains("WHERE [id] = N'1'"));
+        assert!(statements[0].contains("WHERE [id] = 1"));
         assert!(statements[1].contains("[name] = NULL"));
-        assert!(statements[1].contains("WHERE [id] = N'2'"));
+        assert!(statements[1].contains("WHERE [id] = 2"));
         let inserted = restore_statements(EngineKind::Postgres, &[delete]);
         assert_eq!(inserted.len(), 1);
-        assert!(inserted[0].contains("INSERT INTO \"public\".\"logs\" (\"id\", \"note\") OVERRIDING SYSTEM VALUE VALUES ('9', NULL)"));
+        assert!(inserted[0].contains("INSERT INTO \"public\".\"logs\" (\"id\", \"note\") OVERRIDING SYSTEM VALUE VALUES (9, NULL)"));
     }
 
     #[test]
@@ -1762,7 +1967,7 @@ mod tests {
         };
         let statements = restore_statements(EngineKind::Mssql, &[backup]);
         assert_eq!(statements[0], "SET IDENTITY_INSERT [dbo].[users] ON");
-        assert!(statements[1].contains("VALUES (N'1', N'Ada')"));
+        assert!(statements[1].contains("VALUES (1, N'Ada')"));
         assert_eq!(statements[2], "SET IDENTITY_INSERT [dbo].[users] OFF");
     }
 

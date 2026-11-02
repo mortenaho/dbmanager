@@ -140,6 +140,7 @@ function toCompletion(
     view: kinds.Interface,
     column: kinds.Field,
     routine: kinds.Method,
+    keyword: kinds.Keyword,
   }[suggestion.kind];
   return {
     label: suggestion.label,

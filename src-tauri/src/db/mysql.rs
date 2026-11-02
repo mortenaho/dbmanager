@@ -160,6 +160,12 @@ pub async fn rename_table(
     conn.query_drop(sql).await.map_err(|e| e.to_string())
 }
 
+pub async fn create_database(conn: &mut mysql_async::Conn, name: &str) -> Result<(), String> {
+    conn.query_drop(format!("CREATE DATABASE {}", quote_mysql(name)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 pub async fn rename_database(
     conn: &mut mysql_async::Conn,
     old: &str,
@@ -617,9 +623,14 @@ fn cell(row: &mysql_async::Row, index: usize) -> Option<String> {
         }
         Value::Time(negative, days, hour, minute, second, micros) => {
             let sign = if negative { "-" } else { "" };
-            Some(format!(
-                "{sign}{days}d {hour:02}:{minute:02}:{second:02}.{micros:06}"
-            ))
+            let hours = u64::from(days) * 24 + u64::from(hour);
+            if micros == 0 {
+                Some(format!("{sign}{hours}:{minute:02}:{second:02}"))
+            } else {
+                Some(format!(
+                    "{sign}{hours}:{minute:02}:{second:02}.{micros:06}"
+                ))
+            }
         }
     }
 }

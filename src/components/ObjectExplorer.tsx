@@ -47,6 +47,7 @@ type Props = {
   onSelectContext: (connectionId: string, database: string) => void;
   onRenameDatabase: (connectionId: string, database: string) => void;
   onRenameTable: (connectionId: string, database: string, schema: string, name: string) => void;
+  onCreateDatabase: (connectionId: string) => void;
   onDesignTable: (connectionId: string, database: string, schema: string, name: string) => void;
   onScriptRoutine: (connectionId: string, database: string, object: DbObject) => void;
   onGenerateScript: (
@@ -84,6 +85,7 @@ export function ObjectExplorer({
   onSelectContext,
   onRenameDatabase,
   onRenameTable,
+  onCreateDatabase,
   onDesignTable,
   onScriptRoutine,
   onGenerateScript,
@@ -115,12 +117,22 @@ export function ObjectExplorer({
 
   useEffect(() => {
     const close = (event: globalThis.MouseEvent) => {
+      // Right-click opens the explorer menu; ignore it so WebKit/Tauri
+      // platforms that only deliver mousedown still keep the menu open.
+      if (event.button === 2) return;
       const target = event.target;
       if (target instanceof Element && target.closest(".context-menu")) return;
       setMenu(null);
     };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(null);
+    };
     window.addEventListener("mousedown", close);
-    return () => window.removeEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
   }, []);
 
   function toggle(id: string) {
@@ -324,6 +336,7 @@ export function ObjectExplorer({
       const connection = item.kind.connection;
       openMenu(event, [
         { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, connection.database) },
+        { label: "New Database", icon: <DatabaseIcon />, action: () => onCreateDatabase(connection.id) },
         { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
         { label: "Disconnect", icon: <DisconnectIcon />, action: () => onDisconnect(connection.id) },
       ]);
@@ -337,72 +350,80 @@ export function ObjectExplorer({
         { label: "Rename", icon: <RenameIcon />, action: () => onRenameDatabase(connection.id, database) },
         { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
       ]);
+    } else if (item.kind.type === "folder") {
+      const { connection, database, folder } = item.kind;
+      const items =
+        folder === "table"
+          ? [
+              {
+                label: "New Table",
+                icon: <NewTableIcon />,
+                action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), ""),
+              },
+            ]
+          : [];
+      openMenu(event, [
+        ...items,
+        { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
+      ]);
     } else if (item.kind.type === "object") {
       const { connection, database, object, folder } = item.kind;
       const routine = folder === "procedure" || folder === "function";
       const topLabel = connection.engine === "mssql" ? "Select Top 1000 Rows" : "Select First 1000 Rows";
-      openMenu(
-        event,
-        routine
-          ? [
-              { label: "Script as CREATE", icon: <ScriptIcon />, action: () => onScriptRoutine(connection.id, database, object) },
-              { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
-            ]
-          : folder === "view"
-            ? [
-                {
-                  label: topLabel,
-                  icon: <SelectRowsIcon />,
-                  action: () =>
-                    onSelectTop(
-                      connection.id,
-                      database,
-                      selectTopSql(connection.engine, object.schema, object.name),
-                      objectTabTitle(connection.engine, object.schema, object.name),
-                    ),
-                },
-                { label: "Script as CREATE", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, object, "create") },
-                { label: "Rename", icon: <RenameIcon />, action: () => onRenameTable(connection.id, database, object.schema, object.name) },
-                { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
-              ]
-            : [
-                { label: "Design", icon: <DesignIcon />, action: () => onDesignTable(connection.id, database, object.schema, object.name) },
-                {
-                  label: topLabel,
-                  icon: <SelectRowsIcon />,
-                  action: () =>
-                    onSelectTop(
-                      connection.id,
-                      database,
-                      selectTopSql(connection.engine, object.schema, object.name),
-                      objectTabTitle(connection.engine, object.schema, object.name),
-                    ),
-                },
-                { label: "Script as CREATE", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, object, "create") },
-                { label: "Script as INSERT", icon: <InsertIcon />, action: () => onGenerateScript(connection.id, database, object, "insert") },
-                {
-                  label: "Script as CREATE and INSERT",
-                  icon: <ScriptBothIcon />,
-                  action: () => onGenerateScript(connection.id, database, object, "both"),
-                },
-                {
-                  label: "Generate Script...",
-                  icon: <ScriptIcon />,
-                  action: () => onGenerateScript(connection.id, database, object, "schema"),
-                },
-                { label: "Rename", icon: <RenameIcon />, action: () => onRenameTable(connection.id, database, object.schema, object.name) },
-                { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
-              ],
-      );
-    } else if (item.kind.type === "folder" && item.kind.folder === "table") {
-      const { connection, database } = item.kind;
+      if (routine) {
+        openMenu(event, [
+          { label: "Edit / Script as CREATE", icon: <ScriptIcon />, action: () => onScriptRoutine(connection.id, database, object) },
+          { label: "Rename", icon: <RenameIcon />, action: () => onRenameTable(connection.id, database, object.schema, object.name) },
+          { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
+        ]);
+        return;
+      }
+      if (folder === "view") {
+        openMenu(event, [
+          {
+            label: topLabel,
+            icon: <SelectRowsIcon />,
+            action: () =>
+              onSelectTop(
+                connection.id,
+                database,
+                selectTopSql(connection.engine, object.schema, object.name),
+                objectTabTitle(connection.engine, object.schema, object.name),
+              ),
+          },
+          { label: "Edit / Script as CREATE", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, object, "create") },
+          { label: "Rename", icon: <RenameIcon />, action: () => onRenameTable(connection.id, database, object.schema, object.name) },
+          { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
+        ]);
+        return;
+      }
       openMenu(event, [
+        { label: "Design", icon: <DesignIcon />, action: () => onDesignTable(connection.id, database, object.schema, object.name) },
         {
-          label: "New Table",
-          icon: <NewTableIcon />,
-          action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), ""),
+          label: topLabel,
+          icon: <SelectRowsIcon />,
+          action: () =>
+            onSelectTop(
+              connection.id,
+              database,
+              selectTopSql(connection.engine, object.schema, object.name),
+              objectTabTitle(connection.engine, object.schema, object.name),
+            ),
         },
-        { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
+        { label: "Script as CREATE", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, object, "create") },
+        { label: "Script as INSERT", icon: <InsertIcon />, action: () => onGenerateScript(connection.id, database, object, "insert") },
+        {
+          label: "Script as CREATE and INSERT",
+          icon: <ScriptBothIcon />,
+          action: () => onGenerateScript(connection.id, database, object, "both"),
+        },
+        {
+          label: "Generate Script...",
+          icon: <ScriptIcon />,
+          action: () => onGenerateScript(connection.id, database, object, "schema"),
+        },
+        { label: "Rename", icon: <RenameIcon />, action: () => onRenameTable(connection.id, database, object.schema, object.name) },
+        { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
       ]);
     }
   }
@@ -478,8 +499,8 @@ export function ObjectExplorer({
                   onContextMenu={
                     item.kind.type === "server" ||
                     item.kind.type === "database" ||
-                    item.kind.type === "object" ||
-                    (item.kind.type === "folder" && item.kind.folder === "table")
+                    item.kind.type === "folder" ||
+                    item.kind.type === "object"
                       ? (event) => onRowMenu(event, item)
                       : undefined
                   }
@@ -742,7 +763,20 @@ function TreeRow(props: {
         props.onClick();
       }}
       onDoubleClick={props.onDoubleClick}
-      onContextMenu={props.onContextMenu}
+      onMouseDown={(event) => {
+        // Tauri/WebKit on Linux may suppress the DOM contextmenu event; open on right button instead.
+        if (event.button === 2 && props.onContextMenu) {
+          event.preventDefault();
+          event.stopPropagation();
+          props.onContextMenu(event);
+        }
+      }}
+      onContextMenu={(event) => {
+        if (!props.onContextMenu) return;
+        event.preventDefault();
+        event.stopPropagation();
+        props.onContextMenu(event);
+      }}
     >
       <span className="twist">{item.canExpand ? <i /> : null}</span>
       {ICONS[item.icon]}

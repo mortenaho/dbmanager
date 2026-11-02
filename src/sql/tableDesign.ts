@@ -254,6 +254,43 @@ function qualify(engine: EngineKind, schema: string, name: string): string {
   return `${quoteIdent(engine, schema)}.${quoteIdent(engine, name)}`;
 }
 
+export function createSchemaSql(engine: EngineKind, schema: string): string | null {
+  const name = schema.trim();
+  if (!name || engine === "mysql") return null;
+  if (engine === "postgres") {
+    if (name.toLowerCase() === "public") return null;
+    return `CREATE SCHEMA IF NOT EXISTS ${quoteIdent(engine, name)}`;
+  }
+  if (
+    name.toLowerCase() === "dbo" ||
+    name.toLowerCase() === "guest" ||
+    name.toLowerCase() === "sys" ||
+    name.toLowerCase() === "information_schema"
+  ) {
+    return null;
+  }
+  const quoted = quoteIdent(engine, name);
+  const execBody = `CREATE SCHEMA ${quoted}`.replace(/'/g, "''");
+  return `IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'${name.replace(/'/g, "''")}')\n    EXEC(N'${execBody}')`;
+}
+
+export function moveTableSchemaSql(
+  engine: EngineKind,
+  fromSchema: string,
+  toSchema: string,
+  table: string,
+): string | null {
+  const from = fromSchema.trim();
+  const to = toSchema.trim();
+  const name = table.trim();
+  if (!from || !to || !name || engine === "mysql") return null;
+  if (from.toLowerCase() === to.toLowerCase()) return null;
+  if (engine === "postgres") {
+    return `ALTER TABLE ${qualify(engine, from, name)} SET SCHEMA ${quoteIdent(engine, to)}`;
+  }
+  return `ALTER SCHEMA ${quoteIdent(engine, to)} TRANSFER ${qualify(engine, from, name)}`;
+}
+
 export function indexKinds(engine: EngineKind): string[] {
   if (engine === "mssql") return ["NONCLUSTERED", "CLUSTERED"];
   if (engine === "postgres") return ["btree", "hash", "gin", "gist", "brin", "spgist"];
@@ -376,6 +413,7 @@ export function parseRelations(engine: EngineKind, rows: Array<Array<string | nu
 export function buildTableStatements(input: {
   engine: EngineKind;
   schema: string;
+  originalSchema?: string;
   name: string;
   creating: boolean;
   previous: ColumnDraft[];
@@ -388,6 +426,9 @@ export function buildTableStatements(input: {
 }): { statements: string[]; error: string } {
   const ready = usable(input.next);
   if (!ready.length) return { statements: [], error: "Add at least one column." };
+  if (input.engine !== "mysql" && !input.schema.trim()) {
+    return { statements: [], error: "Schema is required." };
+  }
   const seen = new Set<string>();
   for (const column of ready) {
     const key = column.name.toLowerCase();
@@ -400,14 +441,19 @@ export function buildTableStatements(input: {
   const relationError = validateRelations(input.nextRelations, names);
   if (relationError) return { statements: [], error: relationError };
   const renames = columnRenames(input.previous, ready);
+  const ensureSchema = createSchemaSql(input.engine, input.schema);
+  const prefix = ensureSchema ? [ensureSchema] : [];
   if (input.creating) {
-    const statements = [createTableSql(input.engine, input.schema, input.name, ready)];
+    const statements = [...prefix, createTableSql(input.engine, input.schema, input.name, ready)];
     statements.push(...commentStatements(input.engine, input.schema, input.name, [], ready));
     statements.push(...input.nextIndexes.map((index) => createIndexSql(input.engine, input.schema, input.name, index)));
     statements.push(...input.nextRelations.map((relation) => createRelationSql(input.engine, input.schema, input.name, relation)));
     return { statements, error: "" };
   }
-  const columns = alterTableSql(input.engine, input.schema, input.name, input.previous, ready, input.primaryKey);
+  const sourceSchema = (input.originalSchema ?? input.schema).trim();
+  const move = moveTableSchemaSql(input.engine, sourceSchema, input.schema, input.name);
+  const workSchema = input.schema;
+  const columns = alterTableSql(input.engine, workSchema, input.name, input.previous, ready, input.primaryKey);
   if (columns.error) return columns;
   const droppedRelations = input.previousRelations.filter((relation) => {
     const next = input.nextRelations.find((item) => item.originalName.toLowerCase() === relation.name.toLowerCase());
@@ -427,15 +473,19 @@ export function buildTableStatements(input: {
     const previous = input.previousRelations.find((item) => item.name.toLowerCase() === relation.originalName.toLowerCase());
     return !previous || !relationSame(previous, relation, renames);
   });
+  // Drop FKs/indexes before moving; alter/create after the table is in the target schema.
+  const beforeMove = [
+    ...droppedRelations.map((relation) => dropRelationSql(input.engine, sourceSchema, input.name, relation.name)),
+    ...droppedIndexes.map((index) => dropIndexSql(input.engine, sourceSchema, input.name, index.name)),
+  ];
+  const afterMove = [
+    ...columns.statements,
+    ...commentStatements(input.engine, workSchema, input.name, input.previous, ready),
+    ...createdIndexes.map((index) => createIndexSql(input.engine, workSchema, input.name, index)),
+    ...createdRelations.map((relation) => createRelationSql(input.engine, workSchema, input.name, relation)),
+  ];
   return {
-    statements: [
-      ...droppedRelations.map((relation) => dropRelationSql(input.engine, input.schema, input.name, relation.name)),
-      ...droppedIndexes.map((index) => dropIndexSql(input.engine, input.schema, input.name, index.name)),
-      ...columns.statements,
-      ...commentStatements(input.engine, input.schema, input.name, input.previous, ready),
-      ...createdIndexes.map((index) => createIndexSql(input.engine, input.schema, input.name, index)),
-      ...createdRelations.map((relation) => createRelationSql(input.engine, input.schema, input.name, relation)),
-    ],
+    statements: [...prefix, ...beforeMove, ...(move ? [move] : []), ...afterMove],
     error: "",
   };
 }

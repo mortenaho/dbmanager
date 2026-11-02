@@ -36,7 +36,9 @@ pub fn chat_url(base: &str) -> Result<String, String> {
     let host = after.split(['/', '?', '#']).next().unwrap_or("");
     let host_only = host_name(host);
     if http && !matches!(host_only, "localhost" | "127.0.0.1" | "::1") {
-        return Err("Use https:// for the assistant. http:// is only allowed for localhost.".into());
+        return Err(
+            "Use https:// for the assistant. http:// is only allowed for localhost.".into(),
+        );
     }
     if base.ends_with("/chat/completions") {
         Ok(base)
@@ -85,7 +87,10 @@ pub fn parse_reply(raw: &str) -> Result<AskReply, String> {
     if note.chars().count() > 280 {
         note = note.chars().take(280).collect();
     }
-    Ok(AskReply { sql, note: note.trim().to_string() })
+    Ok(AskReply {
+        sql,
+        note: note.trim().to_string(),
+    })
 }
 
 pub fn complete(
@@ -108,7 +113,11 @@ pub fn complete(
     }
     let model = {
         let model = settings.ai_model.trim();
-        if model.is_empty() { "gpt-4o-mini" } else { model }
+        if model.is_empty() {
+            "gpt-4o-mini"
+        } else {
+            model
+        }
     };
     let url = chat_url(&settings.ai_base_url)?;
     let schema = schema.trim();
@@ -148,14 +157,16 @@ pub fn complete(
                 .chars()
                 .take(400)
                 .collect::<String>();
-            return Err(format!("The assistant returned HTTP {code}. {detail}").trim().to_string());
+            return Err(format!("The assistant returned HTTP {code}. {detail}")
+                .trim()
+                .to_string());
         }
         Err(error) => return Err(format!("Could not reach the assistant. {error}")),
     };
-    let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
-        "The assistant response was not JSON.".to_string()
-    })?;
-    let text = message_text(&value).ok_or_else(|| "The assistant response had no text.".to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| "The assistant response was not JSON.".to_string())?;
+    let text =
+        message_text(&value).ok_or_else(|| "The assistant response had no text.".to_string())?;
     parse_reply(&text)
 }
 

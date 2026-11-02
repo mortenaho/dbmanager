@@ -23,6 +23,7 @@ import {
   type IndexDraft,
   type RelationDraft,
 } from "../sql/tableDesign";
+import { hasPrimaryMod, isLetterKey } from "../keyboard";
 import { errorText, type DbObject, type EngineKind } from "../types";
 import { DeleteColumnIcon, DeleteIcon, InsertColumnIcon, InsertIcon, LinkIcon, SaveIcon, TableIcon, UniqueIcon } from "./Icons";
 
@@ -142,7 +143,7 @@ export function TableDesigner(props: {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+      if (hasPrimaryMod(event) && isLetterKey(event, "s")) {
         event.preventDefault();
         void save(naming);
       }
@@ -307,10 +308,15 @@ export function TableDesigner(props: {
       setTableName("");
       return;
     }
-    const name = (force ? tableName : props.name).trim();
-    const schemaName = props.engine === "mysql" ? props.database : (force ? schema : props.schema).trim();
+    const name = (force ? tableName : props.name || tableName).trim();
+    const schemaName = props.engine === "mysql" ? props.database : schema.trim();
+    const originalSchema = props.engine === "mysql" ? props.database : props.schema.trim();
     if (!name) {
       setError("Table name is required.");
+      return;
+    }
+    if (props.engine !== "mysql" && !schemaName) {
+      setError("Schema is required.");
       return;
     }
     if (!props.connectionId) {
@@ -324,7 +330,12 @@ export function TableDesigner(props: {
       let constraint = "";
       const keysChanged = !creating && pkList(previous) !== pkList(columns);
       if (keysChanged) {
-        const lookup = await executeSql(props.connectionId, props.database, primaryKeyLookupSql(props.engine, props.database, schemaName, props.name), 20);
+        const lookup = await executeSql(
+          props.connectionId,
+          props.database,
+          primaryKeyLookupSql(props.engine, props.database, originalSchema, props.name),
+          20,
+        );
         const failed = lookup.messages.find((message) => message.level === "error");
         if (failed) throw new Error(failed.text);
         constraint = lookup.resultSets[0]?.rows[0]?.[0] ?? "";
@@ -332,6 +343,7 @@ export function TableDesigner(props: {
       const change = buildTableStatements({
         engine: props.engine,
         schema: schemaName,
+        originalSchema,
         name: creating ? name : props.name,
         creating,
         previous,
@@ -370,6 +382,17 @@ export function TableDesigner(props: {
           <span>Delete Column</span>
         </button>
         <span className="spacer" />
+        {props.engine === "mysql" ? null : (
+          <label className="td-schema">
+            Schema
+            <input
+              value={schema}
+              disabled={busy}
+              title="Schema (new names are created on save)"
+              onChange={(event) => setSchema(event.target.value)}
+            />
+          </label>
+        )}
         <button type="button" className="diagram-go" title="Save (Ctrl+S)" disabled={busy} onClick={() => void save(false)}>
           <SaveIcon />
           <span>{busy ? "Saving..." : "Save"}</span>

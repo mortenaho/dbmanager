@@ -179,6 +179,34 @@ pub async fn list_all_columns(
     }
 }
 
+pub async fn create_database(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    name: &str,
+) -> Result<Vec<String>, String> {
+    let name = require_ident(name, "Database")?;
+    ensure_open(conn, creds).await?;
+    match conn {
+        EngineConn::Postgres(clients) => {
+            let admin = "postgres";
+            let client = match postgres::ensure(clients, creds, admin).await {
+                Ok(client) => client,
+                Err(error) => postgres::ensure(clients, creds, "template1")
+                    .await
+                    .map_err(|_| error)?,
+            };
+            postgres::create_database(client, &name).await?;
+        }
+        EngineConn::Mysql(conn) => mysql::create_database(conn, &name).await?,
+        EngineConn::Mssql(client) => {
+            mssql::use_database(client, "master").await?;
+            mssql::create_database(client, &name).await?;
+        }
+        EngineConn::Closed => return Err("Connection is closed.".into()),
+    }
+    list_databases(conn, creds).await
+}
+
 pub async fn rename_object(
     conn: &mut EngineConn,
     creds: &Credentials,
@@ -415,7 +443,7 @@ pub async fn generate_script(
             .into_iter()
             .filter(|object| options.allows_object(object))
             .collect();
-        if options.include_schemas && options.include_create {
+        if options.include_schemas {
             let mut schemas = selected
                 .iter()
                 .map(|object| object.schema.clone())
@@ -465,7 +493,7 @@ pub async fn generate_script(
         };
         let name = require_ident(name, "Object")?;
         let object = crate::model::DbObject::plain(schema.clone(), name, kind);
-        if options.include_schemas && options.include_create {
+        if options.include_schemas {
             if let Some(statement) = script::create_schema_sql(creds.engine, &schema) {
                 sql.push_str(&statement);
                 sql.push('\n');

@@ -186,6 +186,11 @@ pub async fn rename_database(client: &Client, name: &str, new_name: &str) -> Res
     client.batch_execute(&sql).await.map_err(|e| e.to_string())
 }
 
+pub async fn create_database(client: &Client, name: &str) -> Result<(), String> {
+    let sql = format!("CREATE DATABASE {}", quote_pg(name));
+    client.batch_execute(&sql).await.map_err(|e| e.to_string())
+}
+
 pub async fn script_routine(
     client: &Client,
     schema: &str,
