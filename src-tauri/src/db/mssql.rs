@@ -413,14 +413,18 @@ pub async fn fetch_rows(
     })
 }
 
+fn transport_err(error: impl ToString) -> String {
+    let message = error.to_string();
+    if super::is_connection_error(&message) {
+        format!("connection lost: {message}")
+    } else {
+        message
+    }
+}
+
 async fn exec(client: &mut MssqlClient, sql: &str) -> Result<(), String> {
-    let mut stream = client.simple_query(sql).await.map_err(|e| e.to_string())?;
-    while stream
-        .try_next()
-        .await
-        .map_err(|e| e.to_string())?
-        .is_some()
-    {}
+    let mut stream = client.simple_query(sql).await.map_err(transport_err)?;
+    while stream.try_next().await.map_err(transport_err)?.is_some() {}
     Ok(())
 }
 
@@ -499,9 +503,10 @@ async fn execute_one_batch(client: &mut MssqlClient, sql: &str, max_rows: usize)
     let mut stream = match client.simple_query(sql).await {
         Ok(stream) => stream,
         Err(error) => {
+            let message = error.to_string();
             return Outcome::Failed {
-                message: error.to_string(),
-                drop_connection: false,
+                drop_connection: super::is_connection_error(&message),
+                message,
             };
         }
     };
@@ -613,10 +618,13 @@ pub async fn parse(client: &mut MssqlClient, sql: &str) -> Outcome {
             },
             drop_connection: false,
         },
-        Err(error) => Outcome::Failed {
-            message: error.to_string(),
-            drop_connection: false,
-        },
+        Err(error) => {
+            let message = error.to_string();
+            Outcome::Failed {
+                drop_connection: super::is_connection_error(&message),
+                message,
+            }
+        }
     }
 }
 
@@ -636,8 +644,8 @@ async fn execute_session_batch(client: &mut MssqlClient, sql: &str) -> Outcome {
             drop_connection: false,
         },
         Err(message) => Outcome::Failed {
+            drop_connection: super::is_connection_error(&message),
             message,
-            drop_connection: false,
         },
     }
 }
@@ -646,9 +654,10 @@ async fn execute_counted(client: &mut MssqlClient, sql: &str) -> Outcome {
     let result = match client.execute(sql, &[]).await {
         Ok(result) => result,
         Err(error) => {
+            let message = error.to_string();
             return Outcome::Failed {
-                message: error.to_string(),
-                drop_connection: false,
+                drop_connection: super::is_connection_error(&message),
+                message,
             };
         }
     };
@@ -991,8 +1000,8 @@ async fn query_rows(
     sql: &str,
     params: &[&dyn ToSql],
 ) -> Result<Vec<tiberius::Row>, String> {
-    let stream = client.query(sql, params).await.map_err(|e| e.to_string())?;
-    stream.into_first_result().await.map_err(|e| e.to_string())
+    let stream = client.query(sql, params).await.map_err(transport_err)?;
+    stream.into_first_result().await.map_err(transport_err)
 }
 
 fn format_sql_datetime(value: chrono::NaiveDateTime) -> String {

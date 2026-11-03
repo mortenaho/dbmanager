@@ -104,17 +104,25 @@ pub async fn list_databases(
     conn: &mut EngineConn,
     creds: &Credentials,
 ) -> Result<Vec<String>, String> {
-    ensure_open(conn, creds).await?;
-    match conn {
-        EngineConn::Postgres(clients) => {
-            let database = postgres_db(creds, &creds.database);
-            let client = postgres::ensure(clients, creds, database).await?;
-            postgres::list_databases(client).await
+    for attempt in 0..2 {
+        ensure_open(conn, creds).await?;
+        let result = match conn {
+            EngineConn::Postgres(clients) => {
+                let database = postgres_db(creds, &creds.database);
+                let client = postgres::ensure(clients, creds, database).await?;
+                postgres::list_databases(client).await
+            }
+            EngineConn::Mysql(inner) => mysql::list_databases(inner).await,
+            EngineConn::Mssql(client) => mssql::list_databases(client).await,
+            EngineConn::Closed => Err("Connection is closed.".into()),
+        };
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt == 0 && mark_for_reconnect(conn, &error) => continue,
+            Err(error) => return Err(error),
         }
-        EngineConn::Mysql(conn) => mysql::list_databases(conn).await,
-        EngineConn::Mssql(client) => mssql::list_databases(client).await,
-        EngineConn::Closed => Err("Connection is closed.".into()),
     }
+    Err("Connection is closed.".into())
 }
 
 pub async fn list_objects(
@@ -125,16 +133,24 @@ pub async fn list_objects(
     if database.is_empty() {
         return Err("Choose a database first.".into());
     }
-    ensure_open(conn, creds).await?;
-    match conn {
-        EngineConn::Postgres(clients) => {
-            let client = postgres::ensure(clients, creds, database).await?;
-            postgres::list_objects(client).await
+    for attempt in 0..2 {
+        ensure_open(conn, creds).await?;
+        let result = match conn {
+            EngineConn::Postgres(clients) => {
+                let client = postgres::ensure(clients, creds, database).await?;
+                postgres::list_objects(client).await
+            }
+            EngineConn::Mysql(inner) => mysql::list_objects(inner, database).await,
+            EngineConn::Mssql(client) => mssql::list_objects(client, database).await,
+            EngineConn::Closed => Err("Connection is closed.".into()),
+        };
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt == 0 && mark_for_reconnect(conn, &error) => continue,
+            Err(error) => return Err(error),
         }
-        EngineConn::Mysql(conn) => mysql::list_objects(conn, database).await,
-        EngineConn::Mssql(client) => mssql::list_objects(client, database).await,
-        EngineConn::Closed => Err("Connection is closed.".into()),
     }
+    Err("Connection is closed.".into())
 }
 
 pub async fn list_columns(
@@ -147,16 +163,24 @@ pub async fn list_columns(
     if database.is_empty() {
         return Err("Choose a database first.".into());
     }
-    ensure_open(conn, creds).await?;
-    match conn {
-        EngineConn::Postgres(clients) => {
-            let client = postgres::ensure(clients, creds, database).await?;
-            postgres::list_columns(client, schema, table).await
+    for attempt in 0..2 {
+        ensure_open(conn, creds).await?;
+        let result = match conn {
+            EngineConn::Postgres(clients) => {
+                let client = postgres::ensure(clients, creds, database).await?;
+                postgres::list_columns(client, schema, table).await
+            }
+            EngineConn::Mysql(inner) => mysql::list_columns(inner, database, table).await,
+            EngineConn::Mssql(client) => mssql::list_columns(client, database, schema, table).await,
+            EngineConn::Closed => Err("Connection is closed.".into()),
+        };
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt == 0 && mark_for_reconnect(conn, &error) => continue,
+            Err(error) => return Err(error),
         }
-        EngineConn::Mysql(conn) => mysql::list_columns(conn, database, table).await,
-        EngineConn::Mssql(client) => mssql::list_columns(client, database, schema, table).await,
-        EngineConn::Closed => Err("Connection is closed.".into()),
     }
+    Err("Connection is closed.".into())
 }
 
 pub async fn list_all_columns(
@@ -167,16 +191,24 @@ pub async fn list_all_columns(
     if database.is_empty() {
         return Err("Choose a database first.".into());
     }
-    ensure_open(conn, creds).await?;
-    match conn {
-        EngineConn::Postgres(clients) => {
-            let client = postgres::ensure(clients, creds, database).await?;
-            postgres::list_all_columns(client).await
+    for attempt in 0..2 {
+        ensure_open(conn, creds).await?;
+        let result = match conn {
+            EngineConn::Postgres(clients) => {
+                let client = postgres::ensure(clients, creds, database).await?;
+                postgres::list_all_columns(client).await
+            }
+            EngineConn::Mysql(inner) => mysql::list_all_columns(inner, database).await,
+            EngineConn::Mssql(client) => mssql::list_all_columns(client, database).await,
+            EngineConn::Closed => Err("Connection is closed.".into()),
+        };
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt == 0 && mark_for_reconnect(conn, &error) => continue,
+            Err(error) => return Err(error),
         }
-        EngineConn::Mysql(conn) => mysql::list_all_columns(conn, database).await,
-        EngineConn::Mssql(client) => mssql::list_all_columns(client, database).await,
-        EngineConn::Closed => Err("Connection is closed.".into()),
     }
+    Err("Connection is closed.".into())
 }
 
 pub async fn create_database(
@@ -703,30 +735,45 @@ pub async fn execute_on(
     max_rows: usize,
     switch_database: bool,
 ) -> Result<QueryResponse, String> {
-    ensure_open(conn, creds).await?;
-    let outcome = match conn {
-        EngineConn::Postgres(clients) => {
-            let database = postgres_db(creds, database);
-            let client = postgres::ensure(clients, creds, database).await?;
-            postgres::execute(client, sql, max_rows).await
-        }
-        EngineConn::Mysql(inner) => {
-            if switch_database {
-                mysql::use_database(inner, database).await?;
+    for attempt in 0..2 {
+        ensure_open(conn, creds).await?;
+        let prepare = match conn {
+            EngineConn::Mysql(inner) if switch_database => mysql::use_database(inner, database).await,
+            EngineConn::Mssql(client) if switch_database => {
+                mssql::use_database(client, database).await
             }
-            mysql::execute(inner, sql, max_rows).await
-        }
-        EngineConn::Mssql(client) => {
-            if switch_database {
-                mssql::use_database(client, database).await?;
+            _ => Ok(()),
+        };
+        if let Err(error) = prepare {
+            if attempt == 0 && mark_for_reconnect(conn, &error) {
+                continue;
             }
-            mssql::execute(client, sql, max_rows).await
+            return Err(error);
         }
-        EngineConn::Closed => {
-            return Err("Connection is closed.".into());
+        let outcome = match conn {
+            EngineConn::Postgres(clients) => {
+                let database = postgres_db(creds, database);
+                match postgres::ensure(clients, creds, database).await {
+                    Ok(client) => postgres::execute(client, sql, max_rows).await,
+                    Err(message) => Outcome::Failed {
+                        drop_connection: is_connection_error(&message),
+                        message,
+                    },
+                }
+            }
+            EngineConn::Mysql(inner) => mysql::execute(inner, sql, max_rows).await,
+            EngineConn::Mssql(client) => mssql::execute(client, sql, max_rows).await,
+            EngineConn::Closed => {
+                return Err("Connection is closed.".into());
+            }
+        };
+        match apply(conn, outcome) {
+            Ok(response) => return Ok(response),
+            Err(error) if attempt == 0 && mark_for_reconnect(conn, &error) => continue,
+            Err(error) => return Err(error),
         }
-    };
-    apply(conn, outcome)
+    }
+    Err("Connection is closed.".into())
 }
 
 pub async fn capture_backup(
@@ -908,33 +955,95 @@ pub async fn parse(
     database: &str,
     sql: &str,
 ) -> Result<QueryResponse, String> {
-    ensure_open(conn, creds).await?;
-    let outcome = match conn {
-        EngineConn::Postgres(clients) => {
-            let database = postgres_db(creds, database);
-            let client = postgres::ensure(clients, creds, database).await?;
-            postgres::parse(client, sql).await
+    for attempt in 0..2 {
+        ensure_open(conn, creds).await?;
+        let prepare = match conn {
+            EngineConn::Mysql(inner) => mysql::use_database(inner, database).await,
+            EngineConn::Mssql(client) => mssql::use_database(client, database).await,
+            _ => Ok(()),
+        };
+        if let Err(error) = prepare {
+            if attempt == 0 && mark_for_reconnect(conn, &error) {
+                continue;
+            }
+            return Err(error);
         }
-        EngineConn::Mysql(conn) => {
-            mysql::use_database(conn, database).await?;
-            mysql::parse(conn, sql).await
+        let outcome = match conn {
+            EngineConn::Postgres(clients) => {
+                let database = postgres_db(creds, database);
+                match postgres::ensure(clients, creds, database).await {
+                    Ok(client) => postgres::parse(client, sql).await,
+                    Err(message) => Outcome::Failed {
+                        drop_connection: is_connection_error(&message),
+                        message,
+                    },
+                }
+            }
+            EngineConn::Mysql(inner) => mysql::parse(inner, sql).await,
+            EngineConn::Mssql(client) => mssql::parse(client, sql).await,
+            EngineConn::Closed => {
+                return Err("Connection is closed.".into());
+            }
+        };
+        match apply(conn, outcome) {
+            Ok(response) => return Ok(response),
+            Err(error) if attempt == 0 && mark_for_reconnect(conn, &error) => continue,
+            Err(error) => return Err(error),
         }
-        EngineConn::Mssql(client) => {
-            mssql::use_database(client, database).await?;
-            mssql::parse(client, sql).await
-        }
-        EngineConn::Closed => {
-            return Err("Connection is closed.".into());
-        }
-    };
-    apply(conn, outcome)
+    }
+    Err("Connection is closed.".into())
 }
 
 async fn ensure_open(conn: &mut EngineConn, creds: &Credentials) -> Result<(), String> {
+    if let EngineConn::Postgres(clients) = conn {
+        clients.retain(|_, client| !client.is_closed());
+    }
     if matches!(conn, EngineConn::Closed) {
         *conn = open(creds).await?;
     }
     Ok(())
+}
+
+fn mark_for_reconnect(conn: &mut EngineConn, error: &str) -> bool {
+    if matches!(conn, EngineConn::Closed) || is_connection_error(error) {
+        *conn = EngineConn::Closed;
+        true
+    } else {
+        false
+    }
+}
+
+pub(crate) fn is_connection_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    const MARKERS: &[&str] = &[
+        "connection is closed",
+        "connection closed",
+        "connection reset",
+        "connection refused",
+        "connection aborted",
+        "connection lost",
+        "broken pipe",
+        "broken connection",
+        "not connected",
+        "server has gone away",
+        "server closed the connection",
+        "communication link failure",
+        "unexpected eof",
+        "os error 104",
+        "os error 32",
+        "os error 54",
+        "os error 10054",
+        "i/o error",
+        "io error",
+        "input/output error",
+        "network is unreachable",
+        "temporarily unavailable",
+        "tls handshake eof",
+        "can not write to the stream",
+        "can not read from the stream",
+        "stream closed",
+    ];
+    MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
 fn apply(conn: &mut EngineConn, outcome: Outcome) -> Result<QueryResponse, String> {
@@ -952,7 +1061,7 @@ fn apply(conn: &mut EngineConn, outcome: Outcome) -> Result<QueryResponse, Strin
             message,
             drop_connection,
         } => {
-            if drop_connection {
+            if drop_connection || is_connection_error(&message) {
                 *conn = EngineConn::Closed;
             }
             Err(message)

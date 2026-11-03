@@ -60,6 +60,9 @@ pub async fn ensure<'a>(
     creds: &Credentials,
     database: &str,
 ) -> Result<&'a Client, String> {
+    if map.get(database).is_some_and(Client::is_closed) {
+        map.remove(database);
+    }
     if !map.contains_key(database) {
         let client = connect(creds, database).await?;
         map.insert(database.to_string(), client);
@@ -496,7 +499,7 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Outcome {
         Err(error) => {
             return Outcome::Failed {
                 message: error.to_string(),
-                drop_connection: error.is_closed(),
+                drop_connection: error.is_closed() || super::is_connection_error(&error.to_string()),
             };
         }
     };
@@ -518,7 +521,8 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Outcome {
             Err(error) => {
                 return Outcome::Failed {
                     message: error.to_string(),
-                    drop_connection: error.is_closed(),
+                    drop_connection: error.is_closed()
+                        || super::is_connection_error(&error.to_string()),
                 };
             }
         };
@@ -620,7 +624,7 @@ pub async fn parse(client: &Client, sql: &str) -> Outcome {
         },
         Err(error) => Outcome::Failed {
             message: error.to_string(),
-            drop_connection: error.is_closed(),
+            drop_connection: error.is_closed() || super::is_connection_error(&error.to_string()),
         },
     }
 }

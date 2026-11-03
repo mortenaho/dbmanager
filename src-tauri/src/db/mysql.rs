@@ -40,19 +40,27 @@ pub async fn connect(creds: &Credentials, database: &str) -> Result<mysql_async:
         .map_err(|e| e.to_string())
 }
 
+fn transport_err(error: mysql_async::Error) -> String {
+    if error.is_fatal() {
+        format!("connection lost: {error}")
+    } else {
+        error.to_string()
+    }
+}
+
 pub async fn use_database(conn: &mut mysql_async::Conn, database: &str) -> Result<(), String> {
     if database.is_empty() {
         return Ok(());
     }
     let statement = format!("USE {}", quote_mysql(database));
-    conn.query_drop(statement).await.map_err(|e| e.to_string())
+    conn.query_drop(statement).await.map_err(transport_err)
 }
 
 pub async fn list_databases(conn: &mut mysql_async::Conn) -> Result<Vec<String>, String> {
     let rows: Vec<mysql_async::Row> = conn
         .query("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name")
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_err)?;
     Ok(rows
         .iter()
         .map(|row| cell(row, 0).unwrap_or_default())
@@ -76,7 +84,7 @@ pub async fn list_objects(
             (database,),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_err)?;
 
     let mut objects: Vec<DbObject> = rows
         .iter()
@@ -131,7 +139,7 @@ pub async fn list_all_columns(
             (database,),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_err)?;
     Ok(rows
         .iter()
         .map(|row| ColumnRef {
@@ -447,7 +455,7 @@ pub async fn list_columns(
             (database, table),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(transport_err)?;
 
     Ok(rows
         .iter()
@@ -471,7 +479,8 @@ pub async fn execute(conn: &mut mysql_async::Conn, sql: &str, max_rows: usize) -
         Err(error) => {
             return Outcome::Failed {
                 message: error.to_string(),
-                drop_connection: false,
+                drop_connection: error.is_fatal()
+                    || super::is_connection_error(&error.to_string()),
             };
         }
     };
@@ -587,7 +596,8 @@ pub async fn parse(conn: &mut mysql_async::Conn, sql: &str) -> Outcome {
         }
         Err(error) => Outcome::Failed {
             message: error.to_string(),
-            drop_connection: false,
+            drop_connection: error.is_fatal()
+                || super::is_connection_error(&error.to_string()),
         },
     }
 }
