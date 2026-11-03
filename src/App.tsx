@@ -61,6 +61,7 @@ import {
 } from "./components/Icons";
 import { CreateDatabaseDialog } from "./components/CreateDatabaseDialog";
 import { ObjectExplorer } from "./components/ObjectExplorer";
+import { FullBackupDialog } from "./components/FullBackupDialog";
 import { RenameDialog } from "./components/RenameDialog";
 import { ScriptDialog, type ScriptGenerateOptions, type ScriptPreset } from "./components/ScriptDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -141,6 +142,7 @@ export default function App() {
   const [tableDesignId, setTableDesignId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [context, setContext] = useState<{ connectionId: string; database: string } | null>(null);
+  const [fullBackupTarget, setFullBackupTarget] = useState<{ connectionId: string; database: string } | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
   const [createDbId, setCreateDbId] = useState<string | null>(null);
   const [scriptJob, setScriptJob] = useState<{
@@ -1215,6 +1217,17 @@ export default function App() {
               },
             },
             {
+              label: "Full Backup (.bak)...",
+              hint: "SQL Server",
+              icon: <BackupIcon />,
+              disabled: activeConnection?.engine !== "mssql" || !activeTab?.database,
+              action: () => {
+                if (activeConnection?.engine === "mssql" && activeTab?.database) {
+                  setFullBackupTarget({ connectionId: activeConnection.id, database: activeTab.database });
+                }
+              },
+            },
+            {
               label: "Disconnect",
               hint: "",
               icon: <DisconnectIcon />,
@@ -1477,6 +1490,7 @@ export default function App() {
               }
               onCreateDatabase={(connectionId) => setCreateDbId(connectionId)}
               onDesignTable={(connectionId, database, schema, name) => openTableDesign(connectionId, database, schema, name)}
+              onFullBackup={(connectionId, database) => setFullBackupTarget({ connectionId, database })}
               onScriptRoutine={(connectionId, database, object) => void openRoutine(connectionId, database, object)}
               onGenerateScript={(connectionId, database, object, mode) =>
                 void runGenerate(connectionId, database, object, mode)
@@ -1942,6 +1956,11 @@ export default function App() {
             showNotice("Database created.");
           }}
         />
+      ) : null}
+      {fullBackupTarget ? (
+        <FullBackupDialog {...fullBackupTarget}
+          onCancel={() => setFullBackupTarget(null)}
+          onCompleted={(path) => { setFullBackupTarget(null); showNotice(`Full backup saved on SQL Server: ${path}`); }} />
       ) : null}
       {rename ? (
         <RenameDialog

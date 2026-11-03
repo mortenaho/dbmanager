@@ -145,6 +145,22 @@ pub fn insert_sql(
     sql
 }
 
+pub fn full_backup_sql(database: &str, path: &str) -> Result<String, String> {
+    let database = database.trim();
+    let path = path.trim();
+    if database.is_empty() {
+        return Err("Choose a database first.".into());
+    }
+    if !path.to_ascii_lowercase().ends_with(".bak") || path.contains('\0') {
+        return Err("Enter a SQL Server backup file path ending in .bak.".into());
+    }
+    Ok(format!(
+        "BACKUP DATABASE {} TO DISK = N'{}' WITH COPY_ONLY, NOINIT, CHECKSUM, STATS = 10;",
+        quote_mssql(database),
+        path.replace('\'', "''")
+    ))
+}
+
 pub fn script_header(database: &str, include_data: bool) -> String {
     let kind = if include_data { "backup" } else { "script" };
     format!(
@@ -216,6 +232,16 @@ pub fn create_schema_sql(engine: EngineKind, schema: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_backup_quotes_names_and_preserves_existing_backup_sets() {
+        let sql = full_backup_sql("a]b", "/backups/it's.BAK").unwrap();
+        assert!(sql.contains("BACKUP DATABASE [a]]b]"));
+        assert!(sql.contains("N'/backups/it''s.BAK'"));
+        assert!(sql.contains("COPY_ONLY, NOINIT, CHECKSUM"));
+        assert!(full_backup_sql("", "/tmp/db.bak").is_err());
+        assert!(full_backup_sql("db", "/tmp/db.sql").is_err());
+    }
 
     #[test]
     fn quotes_text_and_nulls() {

@@ -432,6 +432,23 @@ impl ScriptOptions {
     }
 }
 
+pub async fn full_backup(
+    conn: &mut EngineConn,
+    creds: &Credentials,
+    database: &str,
+    path: &str,
+) -> Result<(), String> {
+    if creds.engine != EngineKind::Mssql {
+        return Err("Full .bak backups are supported only for SQL Server.".into());
+    }
+    let sql = script::full_backup_sql(database, path)?;
+    ensure_open(conn, creds).await?;
+    match conn {
+        EngineConn::Mssql(client) => mssql::full_backup(client, &sql).await,
+        _ => Err("SQL Server connection is not available.".into()),
+    }
+}
+
 pub async fn generate_script(
     conn: &mut EngineConn,
     creds: &Credentials,

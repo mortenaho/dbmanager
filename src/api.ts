@@ -189,3 +189,7 @@ export function saveSettings(settings: AppSettings): Promise<AppSettings> {
 export function askSql(engine: string, database: string, schema: string, question: string): Promise<AskReply> {
   return invoke<AskReply>("ask_sql", { engine, database, schema, question });
 }
+
+export function fullBackup(connectionId: string, database: string, path: string): Promise<void> {
+  return invoke("full_backup", { connectionId, database, path });
+}

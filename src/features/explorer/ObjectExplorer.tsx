@@ -295,7 +295,6 @@ export function ObjectExplorer({
       openMenu(event, [
         { label: "New Query", action: () => onNewQuery(connection.id, database) },
         { label: "Generate Scripts", action: () => onGenerateScript(connection.id, database, null, "schema") },
-        { label: "Backup Database", action: () => onGenerateScript(connection.id, database, null, "backup") },
         { label: "Rename", action: () => onRenameDatabase(connection.id, database) },
         { label: "Refresh", action: () => refreshConnection(connection.id) },
       ]);

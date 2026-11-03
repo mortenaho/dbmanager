@@ -280,6 +280,18 @@ pub struct ScriptObjectRef {
 }
 
 #[tauri::command]
+pub async fn full_backup(
+    state: State<'_, DbState>,
+    connection_id: String,
+    database: String,
+    path: String,
+) -> Result<(), String> {
+    let session = session(&state, &connection_id).await?;
+    let mut conn = session.conn.lock().await;
+    crate::db::full_backup(&mut conn, &session.creds, &database, &path).await
+}
+
+#[tauri::command]
 pub async fn generate_script(
     history: State<'_, HistoryDb>,
     state: State<'_, DbState>,

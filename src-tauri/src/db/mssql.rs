@@ -413,6 +413,10 @@ pub async fn fetch_rows(
     })
 }
 
+pub async fn full_backup(client: &mut MssqlClient, sql: &str) -> Result<(), String> {
+    exec(client, sql).await
+}
+
 fn transport_err(error: impl ToString) -> String {
     let message = error.to_string();
     if super::is_connection_error(&message) {
@@ -488,13 +492,17 @@ pub async fn execute(client: &mut MssqlClient, sql: &str, max_rows: usize) -> Ou
 }
 
 async fn execute_one_batch(client: &mut MssqlClient, sql: &str, max_rows: usize) -> Outcome {
+    // Module definitions must be sent as a SQL batch, preserving their body.
+    if batch_defines_module(sql) {
+        return execute_session_batch(client, sql).await;
+    }
     // simple_query discards the DONE token, which is the only place SQL Server
     // reports how many rows an INSERT, UPDATE, or DELETE changed. A batch with
     // no result set can go through execute(), which keeps those counts.
-    // BEGIN, COMMIT, and ROLLBACK must stay on a raw batch. Inside sp_executesql
-    // they change @@TRANCOUNT and SQL Server rejects the call with error 266.
+    // Session state must stay on a raw batch: sp_executesql scopes USE and SET
+    // to its call, and transaction control can cause error 266.
     if !batch_returns_rows(sql) {
-        if batch_changes_transaction(sql) {
+        if batch_changes_session(sql) {
             return execute_session_batch(client, sql).await;
         }
         return execute_counted(client, sql).await;
@@ -687,11 +695,33 @@ async fn execute_counted(client: &mut MssqlClient, sql: &str) -> Outcome {
     }
 }
 
-fn batch_changes_transaction(sql: &str) -> bool {
+fn batch_defines_module(sql: &str) -> bool {
+    let words = statement_words(sql);
+    let mut words = words.iter().map(String::as_str);
+    match words.next() {
+        Some("CREATE") => {
+            let mut kind = words.next();
+            if kind == Some("OR") {
+                if words.next() != Some("ALTER") {
+                    return false;
+                }
+                kind = words.next();
+            }
+            matches!(kind, Some("PROC" | "PROCEDURE" | "FUNCTION" | "VIEW" | "TRIGGER"))
+        }
+        Some("ALTER") => matches!(
+            words.next(),
+            Some("PROC" | "PROCEDURE" | "FUNCTION" | "VIEW" | "TRIGGER")
+        ),
+        _ => false,
+    }
+}
+
+fn batch_changes_session(sql: &str) -> bool {
     split_statements(sql).into_iter().any(|statement| {
         matches!(
             statement_words(&statement).first().map(String::as_str),
-            Some("BEGIN" | "COMMIT" | "ROLLBACK" | "SAVE")
+            Some("BEGIN" | "COMMIT" | "ROLLBACK" | "SAVE" | "USE" | "SET")
         )
     })
 }
@@ -1145,7 +1175,22 @@ fn format_type(name: &str, max_length: i32, precision: i32, scale: i32) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{batch_changes_transaction, batch_returns_rows, split_go_batches};
+    use super::{batch_changes_session, batch_defines_module, batch_returns_rows, split_go_batches};
+
+    #[test]
+    fn module_definitions_use_raw_batches() {
+        for sql in [
+            "CREATE PROCEDURE test AS BEGIN SELECT * FROM platform.Users; END;",
+            "-- Generated\nCREATE OR ALTER PROC dbo.test AS SELECT 1;",
+            "ALTER FUNCTION dbo.f() RETURNS int AS BEGIN RETURN 1; END;",
+            "CREATE VIEW dbo.v AS SELECT 1 AS id;",
+            "CREATE TRIGGER dbo.t ON dbo.x AFTER INSERT AS SELECT 1;",
+        ] {
+            assert!(batch_defines_module(sql), "{sql}");
+        }
+        assert!(!batch_defines_module("CREATE TABLE dbo.t (id int);"));
+        assert!(!batch_defines_module("SELECT 'CREATE PROCEDURE';"));
+    }
 
     #[test]
     fn splits_ssms_go_batches_without_sending_go() {
@@ -1188,17 +1233,31 @@ mod tests {
 
     #[test]
     fn transaction_control_is_not_sent_through_a_procedure() {
-        assert!(batch_changes_transaction("BEGIN TRANSACTION"));
-        assert!(batch_changes_transaction("COMMIT TRANSACTION"));
-        assert!(batch_changes_transaction("ROLLBACK TRANSACTION"));
-        assert!(batch_changes_transaction(
+        assert!(batch_changes_session("BEGIN TRANSACTION"));
+        assert!(batch_changes_session("COMMIT TRANSACTION"));
+        assert!(batch_changes_session("ROLLBACK TRANSACTION"));
+        assert!(batch_changes_session(
             "SET XACT_ABORT ON; BEGIN TRANSACTION"
         ));
-        assert!(batch_changes_transaction(
+        assert!(batch_changes_session(
             "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; BEGIN TRANSACTION"
         ));
-        assert!(!batch_changes_transaction(
+        assert!(!batch_changes_session(
             "UPDATE posts SET title = N'a' WHERE id = 1"
         ));
+    }
+
+    #[test]
+    fn generated_script_preserves_session_state_between_batches() {
+        let batches = split_go_batches(
+            "-- Generated script\nUSE [restored];\nGO\nSET ANSI_NULLS ON;\nSET QUOTED_IDENTIFIER ON;\nGO\nCREATE TABLE dbo.T (id int);\nGO\nSET IDENTITY_INSERT dbo.T ON;\nGO\nINSERT INTO dbo.T (id) VALUES (1);",
+        );
+        assert_eq!(batches.len(), 5);
+        for index in [0, 1, 3] {
+            assert!(!batch_returns_rows(&batches[index]));
+            assert!(batch_changes_session(&batches[index]));
+        }
+        assert!(!batch_changes_session(&batches[2]));
+        assert!(!batch_changes_session(&batches[4]));
     }
 }

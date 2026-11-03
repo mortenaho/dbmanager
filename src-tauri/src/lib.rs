@@ -44,6 +44,7 @@ pub fn run() {
             commands::rename_object,
             commands::script_routine,
             commands::generate_script,
+            commands::full_backup,
             commands::write_text_file,
             commands::read_text_file,
             commands::write_binary_file,

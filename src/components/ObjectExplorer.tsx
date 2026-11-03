@@ -48,6 +48,7 @@ type Props = {
   onRenameDatabase: (connectionId: string, database: string) => void;
   onRenameTable: (connectionId: string, database: string, schema: string, name: string) => void;
   onCreateDatabase: (connectionId: string) => void;
+  onFullBackup: (connectionId: string, database: string) => void;
   onDesignTable: (connectionId: string, database: string, schema: string, name: string) => void;
   onScriptRoutine: (connectionId: string, database: string, object: DbObject) => void;
   onGenerateScript: (
@@ -86,6 +87,7 @@ export function ObjectExplorer({
   onRenameDatabase,
   onRenameTable,
   onCreateDatabase,
+  onFullBackup,
   onDesignTable,
   onScriptRoutine,
   onGenerateScript,
@@ -346,7 +348,7 @@ export function ObjectExplorer({
         { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, database) },
         { label: "New Table", icon: <NewTableIcon />, action: () => onDesignTable(connection.id, database, defaultSchema(connection.engine, database), "") },
         { label: "Generate Scripts...", icon: <ScriptIcon />, action: () => onGenerateScript(connection.id, database, null, "schema") },
-        { label: "Backup Database...", icon: <BackupIcon />, action: () => onGenerateScript(connection.id, database, null, "backup") },
+        ...(connection.engine === "mssql" ? [{ label: "Full Backup (.bak)...", icon: <BackupIcon />, action: () => onFullBackup(connection.id, database) }] : []),
         { label: "Rename", icon: <RenameIcon />, action: () => onRenameDatabase(connection.id, database) },
         { label: "Refresh", icon: <RefreshIcon />, action: () => refreshConnection(connection.id) },
       ]);
