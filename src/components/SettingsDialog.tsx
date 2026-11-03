@@ -19,6 +19,7 @@ type Props = {
 
 export function SettingsDialog({ onClose, onSaved }: Props) {
   const [days, setDays] = useState(30);
+  const [provider, setProvider] = useState<"api" | "codex">("api");
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
   const [model, setModel] = useState("gpt-4o-mini");
   const [apiKey, setApiKey] = useState("");
@@ -29,6 +30,7 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
     loadSettings()
       .then((settings) => {
         setDays(settings.historyDays);
+        setProvider(settings.aiProvider ?? "api");
         if (settings.aiBaseUrl) setBaseUrl(settings.aiBaseUrl);
         if (settings.aiModel) setModel(settings.aiModel);
         setApiKey(settings.aiApiKey);
@@ -42,6 +44,7 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
     try {
       const saved = await saveSettings({
         historyDays: days,
+        aiProvider: provider,
         aiBaseUrl: baseUrl.trim(),
         aiModel: model.trim(),
         aiApiKey: apiKey.trim(),
@@ -95,6 +98,19 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
           </p>
           <div className="section-label">Assistant</div>
           <div className="field">
+            <label htmlFor="ai-provider">Provider</label>
+            <select id="ai-provider" value={provider} onChange={(event) => setProvider(event.target.value as "api" | "codex")}>
+              <option value="api">OpenAI-compatible API</option>
+              <option value="codex">Codex CLI (local login)</option>
+            </select>
+          </div>
+          {provider === "codex" ? (
+            <p className="settings-hint">
+              Uses the installed Codex CLI and its current login. Run codex login in a terminal first.
+              No API key is needed here. Codex drafts SQL in a read-only workspace; you review and run it.
+            </p>
+          ) : <>
+          <div className="field">
             <label htmlFor="ai-base">Base URL</label>
             <input id="ai-base" value={baseUrl} spellCheck={false} onChange={(event) => setBaseUrl(event.target.value)} />
           </div>
@@ -109,6 +125,7 @@ export function SettingsDialog({ onClose, onSaved }: Props) {
           <p className="settings-hint">
             Any OpenAI-compatible service. The key stays in the local settings database and is used only to draft SQL.
           </p>
+          </>}
         </div>
         {error ? <div className="dialog-error">{error}</div> : null}
         <div className="dialog-actions">

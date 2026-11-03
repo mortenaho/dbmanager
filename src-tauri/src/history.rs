@@ -15,6 +15,7 @@ pub struct HistoryDb(pub Mutex<Connection>);
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub history_days: u32,
+    pub ai_provider: String,
     pub ai_base_url: String,
     pub ai_model: String,
     pub ai_api_key: String,
@@ -248,6 +249,10 @@ pub fn load_settings(conn: &Connection) -> Result<AppSettings, String> {
         .unwrap_or(30);
     Ok(AppSettings {
         history_days: normalize_days(days),
+        ai_provider: match setting_text(conn, "ai_provider")?.as_str() {
+            "codex" => "codex".into(),
+            _ => "api".into(),
+        },
         ai_base_url: setting_text(conn, "ai_base_url")?,
         ai_model: setting_text(conn, "ai_model")?,
         ai_api_key: setting_text(conn, "ai_api_key")?,
@@ -271,6 +276,13 @@ pub fn save_assistant(
     put_setting(conn, "ai_model", model.trim())?;
     put_setting(conn, "ai_api_key", api_key.trim())?;
     load_settings(conn)
+}
+
+pub fn save_assistant_provider(conn: &Connection, provider: &str) -> Result<(), String> {
+    if !matches!(provider, "api" | "codex") {
+        return Err("Unknown assistant provider.".into());
+    }
+    put_setting(conn, "ai_provider", provider)
 }
 
 pub fn normalize_days(days: u32) -> u32 {
@@ -793,10 +805,15 @@ mod tests {
         assert_eq!(saved.history_days, 90);
         assert_eq!(load_settings(&conn).unwrap().history_days, 90);
         let assistant = save_assistant(&conn, "https://example.com/v1", "demo", "secret").unwrap();
+        assert_eq!(assistant.ai_provider, "api");
+        save_assistant_provider(&conn, "codex").unwrap();
+        assert!(save_assistant_provider(&conn, "unknown").is_err());
+        assert_eq!(load_settings(&conn).unwrap().ai_provider, "codex");
         assert_eq!(assistant.ai_model, "demo");
         assert_eq!(assistant.ai_api_key, "secret");
         let kept = save_settings(&conn, 7).unwrap();
         assert_eq!(kept.history_days, 7);
+        assert_eq!(kept.ai_provider, "codex");
         assert_eq!(kept.ai_api_key, "secret");
         assert_eq!(kept.ai_base_url, "https://example.com/v1");
         assert_eq!(normalize_days(3), 30);

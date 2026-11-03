@@ -180,6 +180,7 @@ export function loadSettings(): Promise<AppSettings> {
 export function saveSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>("save_settings", {
     historyDays: settings.historyDays,
+    aiProvider: settings.aiProvider,
     aiBaseUrl: settings.aiBaseUrl,
     aiModel: settings.aiModel,
     aiApiKey: settings.aiApiKey,

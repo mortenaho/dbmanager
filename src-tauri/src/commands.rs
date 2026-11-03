@@ -1064,8 +1064,12 @@ pub fn save_settings(
     ai_base_url: Option<String>,
     ai_model: Option<String>,
     ai_api_key: Option<String>,
+    ai_provider: Option<String>,
 ) -> Result<history::AppSettings, String> {
     history.with_conn(|conn| {
+        if let Some(provider) = ai_provider.as_deref() {
+            history::save_assistant_provider(conn, provider)?;
+        }
         history::save_settings(conn, history_days)?;
         if ai_base_url.is_some() || ai_model.is_some() || ai_api_key.is_some() {
             let current = history::load_settings(conn)?;
@@ -1082,7 +1086,7 @@ pub fn save_settings(
 }
 
 #[tauri::command]
-pub fn ask_sql(
+pub async fn ask_sql(
     history: State<'_, HistoryDb>,
     engine: String,
     database: String,
@@ -1090,7 +1094,15 @@ pub fn ask_sql(
     question: String,
 ) -> Result<ask::AskReply, String> {
     let settings = history.with_conn(history::load_settings)?;
-    ask::complete(&settings, &engine, &database, &schema, &question)
+    if settings.ai_provider == "codex" {
+        ask::complete_codex(&engine, &database, &schema, &question).await
+    } else {
+        tauri::async_runtime::spawn_blocking(move || {
+            ask::complete(&settings, &engine, &database, &schema, &question)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
 }
 
 async fn session(state: &DbState, id: &str) -> Result<Arc<Session>, String> {

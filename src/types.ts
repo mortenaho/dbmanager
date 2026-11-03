@@ -125,6 +125,7 @@ export type AppEvent = {
 
 export type AppSettings = {
   historyDays: number;
+  aiProvider: "api" | "codex";
   aiBaseUrl: string;
   aiModel: string;
   aiApiKey: string;
