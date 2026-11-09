@@ -33,9 +33,12 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
   const [pane, setPane] = useState<"results" | "messages">("results");
   const [rolling, setRolling] = useState(false);
   const [view, setView] = useState<"results" | "changes">("results");
+  const [listLoading, setListLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
     let cancel = false;
+    setListLoading(true);
     const handle = window.setTimeout(() => {
       const request = tab === "queries" ? listHistory(filter) : listEvents(filter);
       request
@@ -54,6 +57,9 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
         })
         .catch((reason) => {
           if (!cancel) setError(errorText(reason));
+        })
+        .finally(() => {
+          if (!cancel) setListLoading(false);
         });
     }, 200);
     return () => {
@@ -65,9 +71,12 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
   useEffect(() => {
     if (tab !== "queries" || selectedId == null) {
       setDetail(null);
+      setDetailLoading(false);
       return;
     }
     let cancel = false;
+    setDetail(null);
+    setDetailLoading(true);
     getHistory(selectedId)
       .then((item) => {
         if (cancel) return;
@@ -76,6 +85,9 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
       })
       .catch((reason) => {
         if (!cancel) setError(errorText(reason));
+      })
+      .finally(() => {
+        if (!cancel) setDetailLoading(false);
       });
     return () => {
       cancel = true;
@@ -135,9 +147,14 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
             />
           </div>
           {error ? <div className="dialog-error history-error">{error}</div> : null}
+          {listLoading || detailLoading ? (
+            <div className="empty-results" role="status">
+              {listLoading ? "Loading history…" : "Loading query details…"}
+            </div>
+          ) : null}
           {tab === "log" ? (
             <div className="history-list">
-              {events.length === 0 ? <div className="empty-results">No log entries.</div> : null}
+              {!listLoading && events.length === 0 ? <div className="empty-results">No log entries.</div> : null}
               <table className="history-table">
                 <thead>
                   <tr>
@@ -160,7 +177,7 @@ export function HistoryDialog({ version, onClose, onOpenSettings, onOpenQuery, o
           ) : (
             <>
               <div className="history-list">
-                {queries.length === 0 ? <div className="empty-results">No queries have been saved yet.</div> : null}
+                {!listLoading && queries.length === 0 ? <div className="empty-results">No queries have been saved yet.</div> : null}
                 <table className="history-table pick">
                   <thead>
                     <tr>

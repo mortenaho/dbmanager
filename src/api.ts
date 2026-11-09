@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./loading";
 import type {
   ColumnInfo,
   ColumnRef,

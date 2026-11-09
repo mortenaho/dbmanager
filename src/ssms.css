@@ -1813,3 +1813,30 @@ kbd {
 }
 .td-prop > span { padding: 0 8px; color: var(--c333333); }
 .td-props .dialog-error { margin: 8px; }
+.data-loading {
+  position: fixed;
+  top: 12px;
+  right: 18px;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--c333333);
+  background: var(--cf3f3f3);
+  border: 1px solid var(--ce5e5e5);
+  box-shadow: 0 2px 8px #0002;
+  pointer-events: none;
+}
+.data-loading-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--ce5e5e5);
+  border-top-color: #0078d4;
+  border-radius: 50%;
+  animation: data-loading-spin .8s linear infinite;
+}
+@keyframes data-loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .data-loading-spinner { animation: none; }
+}

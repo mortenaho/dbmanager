@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./loading";
+import { LoadingIndicator } from "./components/LoadingIndicator";
 import { resultsToJson, resultsToXlsx } from "./export";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
@@ -1170,6 +1171,7 @@ export default function App() {
         setTabMenu(null);
       }}
     >
+      <LoadingIndicator />
       <div className="menu-bar">
         <Menu
           label="File"

@@ -358,10 +358,13 @@ fn sql_literal(engine: EngineKind, value: Option<&str>) -> String {
         _ => rendered.replace('\'', "''"),
     };
     match engine {
-        // Temporal values must not use N'...' — SQL Server then treats them as
-        // unicode strings and datetime conversion fails on RFC3339 forms.
+        // Parse high-precision timestamps as datetime2 first: legacy datetime
+        // rejects string literals with more than three fractional digits.
         EngineKind::Mssql if temporal.is_some() && looks_like_timestamptz(rendered) => {
             format!("CONVERT(datetimeoffset, '{escaped}')")
+        }
+        EngineKind::Mssql if temporal.is_some() && looks_like_timestamp(rendered) => {
+            format!("CONVERT(datetime2, '{escaped}', 121)")
         }
         EngineKind::Mssql if temporal.is_some() => format!("'{escaped}'"),
         EngineKind::Mssql => format!("N'{escaped}'"),
@@ -1887,6 +1890,30 @@ mod tests {
         assert!(!batch_controls_transaction(
             "UPDATE users SET note = 'BEGIN' WHERE id = 1"
         ));
+    }
+
+    #[test]
+    fn restore_deleted_sql_server_datetimes_with_high_precision() {
+        let backup = RowBackup {
+            statement_index: 0,
+            kind: WriteKind::Delete,
+            table_sql: "[POS].[RequestStatusHistory]".into(),
+            columns: vec!["CreatedDate".into()],
+            rows: ["2026-08-08 10:03:45.0166666", "2026-08-08 10:04:08.75"]
+                .into_iter()
+                .map(|value| vec![Some(value.into())])
+                .collect(),
+            key_columns: vec![],
+            write_columns: vec!["CreatedDate".into()],
+            identity_insert: false,
+            overriding_system: false,
+        };
+        assert_eq!(
+            restore_statements(EngineKind::Mssql, &[backup]),
+            vec!["INSERT INTO [POS].[RequestStatusHistory] ([CreatedDate]) VALUES (CONVERT(datetime2, '2026-08-08 10:03:45.0166666', 121)), (CONVERT(datetime2, '2026-08-08 10:04:08.75', 121))"]
+        );
+        assert_eq!(sql_literal(EngineKind::Mssql, Some("متن")), "N'متن'");
+        assert_eq!(sql_literal(EngineKind::Mssql, None), "NULL");
     }
 
     #[test]
