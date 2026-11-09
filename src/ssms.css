@@ -1658,16 +1658,18 @@ kbd {
   background: var(--cffffff);
 }
 .table-design-bar {
-  height: 32px;
+  min-height: 32px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  padding: 0 6px;
+  padding: 4px 6px;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(var(--cfafafa), var(--ceeeeee));
   flex: none;
 }
 .table-design-bar button {
+  flex-shrink: 0;
   height: 24px;
   display: inline-flex;
   align-items: center;
@@ -1680,6 +1682,7 @@ kbd {
 .table-design-bar button:hover:not(:disabled) { background: var(--hover); border-color: var(--cc2ddf5); }
 .table-design-bar .spacer { flex: 1; }
 .table-design-bar .td-schema {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 6px;
