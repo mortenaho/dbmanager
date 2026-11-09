@@ -17,6 +17,7 @@ import {
   primaryKeyLookupSql,
   relationActions,
   relationCatalogSql,
+  renameTableSql,
   sizedType,
   uniqueIndexAllowed,
   type ColumnDraft,
@@ -153,6 +154,9 @@ export function TableDesigner(props: {
   });
 
   const current = rows.find((row) => row.key === selected) ?? rows[0];
+  const currentPosition = rows.findIndex((row) => row.key === current?.key);
+  const canMoveUp = currentPosition > 0 && Boolean(current?.name.trim());
+  const canMoveDown = currentPosition >= 0 && Boolean(current?.name.trim()) && Boolean(rows[currentPosition + 1]?.name.trim());
   const currentIndex = indexes.find((item) => item.key === indexId) ?? null;
   const currentRelation = relations.find((item) => item.key === relationId) ?? null;
   const namedColumns = rows.map((row) => row.name.trim()).filter((name) => name !== "");
@@ -216,6 +220,18 @@ export function TableDesigner(props: {
         }),
       ),
     );
+  }
+
+  function moveColumn(direction: -1 | 1) {
+    if (busy || (direction === -1 ? !canMoveUp : !canMoveDown)) return;
+    setRows((items) => {
+      const index = items.findIndex((item) => item.key === current?.key);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= items.length || !items[target].name.trim()) return items;
+      const next = items.slice();
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
   }
 
   function insertColumn() {
@@ -308,7 +324,7 @@ export function TableDesigner(props: {
       setTableName("");
       return;
     }
-    const name = (force ? tableName : props.name || tableName).trim();
+    const name = tableName.trim();
     const schemaName = props.engine === "mysql" ? props.database : schema.trim();
     const originalSchema = props.engine === "mysql" ? props.database : props.schema.trim();
     if (!name) {
@@ -355,6 +371,10 @@ export function TableDesigner(props: {
         nextRelations: relations,
       });
       if (change.error) throw new Error(change.error);
+      if (!creating) {
+        const rename = renameTableSql(props.engine, schemaName, props.name, name);
+        if (rename) change.statements.push(rename);
+      }
       if (change.statements.length) await runStatements(props.connectionId, props.database, change.statements);
       rememberSaved(columns);
       setNaming(false);
@@ -381,7 +401,26 @@ export function TableDesigner(props: {
           <DeleteColumnIcon />
           <span>Delete Column</span>
         </button>
+        <button type="button" title="Move selected column up" disabled={busy || !canMoveUp} onClick={() => moveColumn(-1)}>
+          <span aria-hidden="true">↑</span>
+          <span>Move Up</span>
+        </button>
+        <button type="button" title="Move selected column down" disabled={busy || !canMoveDown} onClick={() => moveColumn(1)}>
+          <span aria-hidden="true">↓</span>
+          <span>Move Down</span>
+        </button>
         <span className="spacer" />
+        {props.name ? (
+          <label className="td-schema">
+            Table
+            <input
+              aria-label="Table name"
+              value={tableName}
+              disabled={busy}
+              onChange={(event) => setTableName(event.target.value)}
+            />
+          </label>
+        ) : null}
         {props.engine === "mysql" ? null : (
           <label className="td-schema">
             Schema

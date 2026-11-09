@@ -1,4 +1,5 @@
 import { quoteIdent, type EngineKind } from "../types";
+import { reorderMssqlColumns } from "./columnOrder";
 
 export type ColumnDraft = {
   name: string;
@@ -291,6 +292,15 @@ export function moveTableSchemaSql(
   return `ALTER SCHEMA ${quoteIdent(engine, to)} TRANSFER ${qualify(engine, from, name)}`;
 }
 
+export function renameTableSql(engine: EngineKind, schema: string, from: string, to: string): string | null {
+  if (from === to) return null;
+  if (engine === "mssql") {
+    return `EXEC sys.sp_rename @objname=${sqlLiteral(engine, qualify(engine, schema, from))}, @newname=${sqlLiteral(engine, to)}, @objtype=N'OBJECT'`;
+  }
+  if (engine === "mysql") return `RENAME TABLE ${qualify(engine, schema, from)} TO ${qualify(engine, schema, to)}`;
+  return `ALTER TABLE ${qualify(engine, schema, from)} RENAME TO ${quoteIdent(engine, to)}`;
+}
+
 export function indexKinds(engine: EngineKind): string[] {
   if (engine === "mssql") return ["NONCLUSTERED", "CLUSTERED"];
   if (engine === "postgres") return ["btree", "hash", "gin", "gist", "brin", "spgist"];
@@ -450,6 +460,26 @@ export function buildTableStatements(input: {
     statements.push(...input.nextRelations.map((relation) => createRelationSql(input.engine, input.schema, input.name, relation)));
     return { statements, error: "" };
   }
+  const naturalOrder = [
+    ...input.previous.filter((old) => ready.some((column) => column.originalName === old.name)).map((old) => old.name),
+    ...ready.filter((column) => !column.originalName).map((column) => column.name),
+  ];
+  const orderChanged = naturalOrder.some((name, index) => name !== (ready[index]?.originalName || ready[index]?.name));
+  if (orderChanged) {
+    const onlyOrderChanged = ready.length === input.previous.length
+      && ready.every((column) => {
+        const old = input.previous.find((item) => item.name === column.originalName);
+        return old && sameDraft(old, column);
+      })
+      && (input.originalSchema ?? input.schema) === input.schema
+      && input.previousIndexes.length === input.nextIndexes.length
+      && input.previousIndexes.every((item, index) => sameDraft(item, input.nextIndexes[index]))
+      && input.previousRelations.length === input.nextRelations.length
+      && input.previousRelations.every((item, index) => sameDraft(item, input.nextRelations[index]));
+    if (!onlyOrderChanged) return { statements: [], error: "Save other design changes before changing column order." };
+    if (input.engine !== "mssql") return { statements: [], error: "Reordering existing columns is currently supported for SQL Server. New tables use the displayed order on all engines." };
+    return { statements: [reorderMssqlColumns(input.schema, input.name, ready.map((column) => column.name))], error: "" };
+  }
   const sourceSchema = (input.originalSchema ?? input.schema).trim();
   const move = moveTableSchemaSql(input.engine, sourceSchema, input.schema, input.name);
   const workSchema = input.schema;
@@ -488,6 +518,10 @@ export function buildTableStatements(input: {
     statements: [...prefix, ...beforeMove, ...(move ? [move] : []), ...afterMove],
     error: "",
   };
+}
+
+function sameDraft<T extends object>(previous: T, next: T): boolean {
+  return (Object.keys(previous) as Array<keyof T>).every((key) => JSON.stringify(previous[key]) === JSON.stringify(next[key]));
 }
 
 function validateIndexes(engine: EngineKind, indexes: IndexDraft[], columns: Set<string>): string {

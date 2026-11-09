@@ -42,14 +42,43 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Set release version
+        id: version
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const config = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+          const [major, minor] = config.version.split('.');
+          const version = `${major}.${minor}.${process.env.GITHUB_RUN_NUMBER}`;
+
+          for (const path of ['src-tauri/tauri.conf.json', 'package.json', 'package-lock.json']) {
+            const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+            data.version = version;
+            if (data.packages?.['']) data.packages[''].version = version;
+            fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+          }
+
+          for (const [path, pattern] of [
+            ['src-tauri/Cargo.toml', /(\[package\]\s*\nname = "dbmanager"\s*\nversion = ")[^"]+(")/],
+            ['src-tauri/Cargo.lock', /(\[\[package\]\]\s*\nname = "dbmanager"\s*\nversion = ")[^"]+(")/],
+          ]) {
+            const text = fs.readFileSync(path, 'utf8');
+            if (!pattern.test(text)) throw new Error(`Package version not found in ${path}`);
+            fs.writeFileSync(path, text.replace(pattern, (_, prefix, suffix) => prefix + version + suffix));
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          NODE
+
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__-${{ github.sha }}
-          releaseName: DB Manager v__VERSION__ (${{ github.sha }})
+          tagName: v${{ steps.version.outputs.version }}
+          releaseName: DB Manager v${{ steps.version.outputs.version }}
           releaseBody: |
-            Built from commit ${{ github.sha }} on ${{ github.ref_name }}.
+            Version ${{ steps.version.outputs.version }}, built from commit ${{ github.sha }} on ${{ github.ref_name }}.
 
             - Debian package: `.deb`
             - Portable Linux build: `.AppImage`
