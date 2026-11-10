@@ -63,7 +63,7 @@ type Props = {
     folder: "table" | "view" | "procedure" | "function";
     title: string;
     objects: DbObject[];
-  }) => void;
+  }, activate?: boolean) => void;
 };
 
 type MenuState = {
@@ -290,7 +290,7 @@ export function ObjectExplorer({
       folder: current.folder,
       title: current.title,
       objects: (objects[`${current.connectionId}:${current.database}`] ?? []).filter((object) => object.kind === current.folder),
-    });
+    }, false);
   }, [connections, objects]);
 
   function onRowClick(item: TreeItem) {

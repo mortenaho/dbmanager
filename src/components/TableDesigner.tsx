@@ -5,11 +5,13 @@ import {
   columnCommentSql,
   decimalType,
   defaultIndexKind,
+  defaultPresets,
   engineTypes,
   formatColumnType,
   indexCatalogSql,
   indexKinds,
   integerType,
+  identityCatalogSql,
   parseColumnType,
   parseComments,
   parseIndexes,
@@ -50,7 +52,14 @@ export function TableDesigner(props: {
   const [naming, setNaming] = useState(false);
   const [schema, setSchema] = useState(props.schema);
   const [tableName, setTableName] = useState(props.name);
-  const [gridHeight, setGridHeight] = useState(280);
+  const [gridHeight, setGridHeight] = useState(() => {
+    try {
+      const height = Number(localStorage.getItem("dbmanager.tableDesign.gridHeight"));
+      return Number.isFinite(height) && height >= 120 && height <= 560 ? height : 280;
+    } catch {
+      return 280;
+    }
+  });
   const [pane, setPane] = useState<DesignPane>("column");
   const [indexes, setIndexes] = useState<IndexRow[]>([]);
   const [relations, setRelations] = useState<RelationRow[]>([]);
@@ -60,6 +69,14 @@ export function TableDesigner(props: {
   const [relationId, setRelationId] = useState("");
   const [tables, setTables] = useState<DbObject[]>([]);
   const [refColumns, setRefColumns] = useState<string[]>([]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("dbmanager.tableDesign.gridHeight", String(gridHeight));
+    } catch {
+      // Resizing remains available when local storage is unavailable.
+    }
+  }, [gridHeight]);
 
   useEffect(() => {
     const base = engineTypes(props.engine);
@@ -93,16 +110,23 @@ export function TableDesigner(props: {
             return [];
           }
         };
-        const [commentRows, indexRows, relationRows] = await Promise.all([
+        const [commentRows, indexRows, relationRows, identityRows] = await Promise.all([
           read(columnCommentSql(props.engine, props.database, props.schema, props.name)),
           read(indexCatalogSql(props.engine, props.database, props.schema, props.name)),
           read(relationCatalogSql(props.engine, props.database, props.schema, props.name)),
+          read(identityCatalogSql(props.engine, props.database, props.schema, props.name)),
         ]);
         if (cancel) return;
         const comments = parseComments(commentRows);
         const loaded = columns.map((column) => {
           const row = fromInfo(column.name, column.dataType, column.nullable, column.primaryKey, base[0]);
           row.comment = comments.get(column.name.toLowerCase()) ?? "";
+          const identity = identityRows.find((item) => item[0]?.toLowerCase() === column.name.toLowerCase());
+          row.identity = Boolean(identity);
+          if (identity) {
+            row.seed = Number(identity[1]) || 1;
+            row.increment = Number(identity[2]) || 1;
+          }
           return row;
         });
         const next = loaded.length ? withBlank(loaded) : [blankRow(base[0])];
@@ -196,6 +220,7 @@ export function TableDesigner(props: {
           if (!row.scale) merged.scale = 0;
         }
         if (patch.dataType && !integerType(patch.dataType)) merged.identity = false;
+        if (patch.identity === true) merged.defaultValue = "";
         if (merged.primaryKey || merged.identity) merged.nullable = false;
         return merged;
       });
@@ -393,6 +418,16 @@ export function TableDesigner(props: {
           <KeyIcon />
           <span>Primary Key</span>
         </button>
+        <button
+          type="button"
+          title={current?.originalName ? "Identity can only be changed for a new column" : "Toggle Identity Column"}
+          aria-pressed={current?.identity ?? false}
+          disabled={busy || !current?.name.trim() || !integerType(current.dataType) || Boolean(current.originalName)}
+          onClick={() => current && update(current.key, { identity: !current.identity })}
+        >
+          <span aria-hidden="true">1↗</span>
+          <span>Identity Column</span>
+        </button>
         <button type="button" title="Insert Column" disabled={busy} onClick={insertColumn}>
           <InsertColumnIcon />
           <span>Insert Column</span>
@@ -437,6 +472,8 @@ export function TableDesigner(props: {
           <span>{busy ? "Saving..." : "Save"}</span>
         </button>
       </div>
+      <div className="td-workspace">
+      <div className="td-main">
       <div className="td-grid" style={{ height: gridHeight }}>
         <table className="td-table">
           <thead>
@@ -678,7 +715,7 @@ export function TableDesigner(props: {
               </select>
             </Property>
             <Property label="Default Value or Binding">
-              <input value={current.defaultValue} onChange={(event) => update(current.key, { defaultValue: event.target.value })} />
+              <input value={current.defaultValue} disabled={current.identity} onChange={(event) => update(current.key, { defaultValue: event.target.value })} />
             </Property>
             <Property label="Comment">
               <textarea
@@ -692,7 +729,7 @@ export function TableDesigner(props: {
             <Property label="(Is Identity)">
               <select
                 value={current.identity ? "yes" : "no"}
-                disabled={!integerType(current.dataType)}
+                disabled={busy || !integerType(current.dataType) || Boolean(current.originalName)}
                 onChange={(event) => update(current.key, { identity: event.target.value === "yes", nullable: event.target.value === "yes" ? false : current.nullable })}
               >
                 <option value="yes">Yes</option>
@@ -702,20 +739,60 @@ export function TableDesigner(props: {
             <Property label="Identity Increment">
               <input
                 value={current.identity ? String(current.increment || 1) : ""}
-                disabled={!current.identity}
+                disabled={busy || !current.identity || Boolean(current.originalName)}
                 onChange={(event) => update(current.key, { increment: Number(event.target.value.replace(/[^\d]/g, "")) || 1 })}
               />
             </Property>
             <Property label="Identity Seed">
               <input
                 value={current.identity ? String(current.seed || 1) : ""}
-                disabled={!current.identity}
+                disabled={busy || !current.identity || Boolean(current.originalName)}
                 onChange={(event) => update(current.key, { seed: Number(event.target.value.replace(/[^\d]/g, "")) || 1 })}
               />
             </Property>
           </>
         ) : null}
         {error ? <p className="dialog-error">{error}</p> : null}
+      </div>
+      </div>
+      <aside className="td-column-sidebar" aria-label="Column settings">
+        <h3>Column settings</h3>
+        {current?.name.trim() ? (
+          <fieldset disabled={busy}>
+            <strong>{current.name}</strong>
+            <span className="meta">{formatColumnType(current)}</span>
+            <label>
+              Default value / SQL expression
+              <input aria-label="Column default value" value={current.defaultValue} disabled={current.identity}
+                placeholder="SQL expression or 'text'"
+                onChange={(event) => update(current.key, { defaultValue: event.target.value })} />
+            </label>
+            <div className="td-default-presets">
+              {defaultPresets(props.engine, current.dataType).map((preset) => (
+                <button key={preset.value} type="button" disabled={current.identity} title={preset.value}
+                  onClick={() => update(current.key, { defaultValue: preset.value })}>
+                  {preset.label}<code>{preset.value}</code>
+                </button>
+              ))}
+              <button type="button" disabled={current.identity || !current.defaultValue}
+                onClick={() => update(current.key, { defaultValue: "" })}>Clear default</button>
+            </div>
+            <p className="meta">Defaults apply to future inserts when the column is omitted. Use Save to apply changes.</p>
+            <label className="td-setting-check"><input type="checkbox" checked={current.nullable}
+              disabled={current.primaryKey || current.identity}
+              onChange={(event) => update(current.key, { nullable: event.target.checked })} />Allow Nulls</label>
+            <label className="td-setting-check"><input type="checkbox" checked={current.primaryKey}
+              onChange={(event) => update(current.key, { primaryKey: event.target.checked })} />Primary Key</label>
+            <label className="td-setting-check"><input type="checkbox" checked={current.identity}
+              disabled={Boolean(current.originalName) || !integerType(current.dataType)}
+              onChange={(event) => update(current.key, { identity: event.target.checked, ...(event.target.checked ? { defaultValue: "" } : {}) })} />Identity Column</label>
+            <label>Column comment<textarea value={current.comment}
+              onChange={(event) => update(current.key, { comment: event.target.value })} /></label>
+            <button type="button" onClick={() => setPane("index")}>Indexes / Unique constraints</button>
+            <button type="button" onClick={() => setPane("relation")}>Foreign keys / Relations</button>
+          </fieldset>
+        ) : <p className="meta">Select a named column to edit its settings.</p>}
+      </aside>
       </div>
       {naming ? (
         <div className="overlay" onMouseDown={() => setNaming(false)}>

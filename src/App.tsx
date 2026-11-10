@@ -448,36 +448,38 @@ export default function App() {
   }
 
   function closeTab(id: string) {
+    const order = [
+      ...tableDesigns.map((doc) => doc.id),
+      ...(designRef.current ? ["design"] : []),
+      ...(detailsRef.current ? ["details"] : []),
+      ...tabsRef.current.map((tab) => tab.id),
+    ];
+    const active = tableDesignRef.current ?? (designActiveRef.current ? "design" : detailsActiveRef.current ? "details" : activeRef.current);
+    if (active === id) {
+      const index = order.indexOf(id);
+      const next = order[index + 1] ?? order[index - 1] ?? null;
+      setTableDesignId(next?.startsWith("td:") ? next : null);
+      setDesignActive(next === "design");
+      setDetailsActive(next === "details");
+      if (next && next !== "design" && next !== "details" && !next.startsWith("td:")) setActiveTabId(next);
+      else if (id === activeRef.current) setActiveTabId(null);
+    }
     if (id.startsWith("td:")) {
       setTableDesigns((current) => current.filter((doc) => doc.id !== id));
-      setTableDesignId((active) => (active === id ? null : active));
       return;
     }
     if (id === "design") {
       setDesignOpen(false);
       setDesignActive(false);
-      if (tabsRef.current.length === 0 && detailsRef.current) setDetailsActive(true);
       return;
     }
     if (id === "details") {
       setDetails(null);
       setDetailsActive(false);
-      if (tabsRef.current.length === 0 && designRef.current) setDesignActive(true);
       return;
     }
     editors.current.delete(id);
-    setTabs((current) => {
-      const next = current.filter((tab) => tab.id !== id);
-      setActiveTabId((active) => {
-        if (active !== id) return active;
-        return next.length > 0 ? next[next.length - 1].id : null;
-      });
-      if (next.length === 0) {
-        if (designRef.current) setDesignActive(true);
-        else if (detailsRef.current) setDetailsActive(true);
-      }
-      return next;
-    });
+    setTabs((current) => current.filter((tab) => tab.id !== id));
   }
 
   function closeTabs(keepId: string | null) {
@@ -1014,7 +1016,7 @@ export default function App() {
   }
 
   async function quickConnect(profile: Profile) {
-    if (!profile.password) {
+    if (!profile.password && !profile.windowsAuth) {
       openConnect(profile.id);
       return;
     }
@@ -1028,6 +1030,7 @@ export default function App() {
           host: saved.host,
           port: saved.port,
           username: saved.username,
+          windowsAuth: saved.windowsAuth ?? false,
           password: profile.password,
           database: saved.database,
           trustCert: saved.trustCert,
@@ -1161,6 +1164,11 @@ export default function App() {
 
   const rowCount = activeTab?.resultSets.reduce((sum, set) => sum + set.rows.length, 0) ?? 0;
   const editorLocked = detailsActive || designActive || tableDesignId !== null;
+  useEffect(() => {
+    if (editorLocked || !activeTabId) return;
+    const frame = requestAnimationFrame(() => editors.current.get(activeTabId)?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [activeTabId, editorLocked]);
   const activeTableDesign = tableDesigns.find((doc) => doc.id === tableDesignId) ?? null;
 
   return (
@@ -1364,17 +1372,6 @@ export default function App() {
             { label: "About DB Manager", hint: "", icon: <InfoIcon />, action: () => setAboutOpen(true) },
           ]}
         />
-        <button
-          type="button"
-          className={askOpen ? "menu-ai on" : "menu-ai"}
-          aria-expanded={askOpen}
-          onClick={() => {
-            setMenu(null);
-            setAskOpen((open) => !open);
-          }}
-        >
-          AI
-        </button>
       </div>
 
       <div className="toolbar">
@@ -1497,7 +1494,11 @@ export default function App() {
               onGenerateScript={(connectionId, database, object, mode) =>
                 void runGenerate(connectionId, database, object, mode)
               }
-              onShowDetails={(target) => {
+              onShowDetails={(target, activate = true) => {
+                if (!activate) {
+                  setDetails((current) => current ? target : null);
+                  return;
+                }
                 setDetails(target);
                 setDetailsActive(true);
                 setDesignActive(false);
@@ -1510,6 +1511,7 @@ export default function App() {
         <section className="document">
           {tabs.length === 0 && !details && !designOpen && tableDesigns.length === 0 ? (
             <div className="blank">
+              {connections.length === 0 ? (
               <div className="blank-card">
                 <div className="blank-brand">
                   <img className="app-logo" src="/logo.png" alt="" width={48} height={48} />
@@ -1545,6 +1547,7 @@ export default function App() {
                   ) : null}
                 </div>
               </div>
+              ) : null}
             </div>
           ) : (
             <>
@@ -1584,6 +1587,7 @@ export default function App() {
                     <button
                       className="close"
                       title="Close"
+                      onMouseDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
                         closeTab(doc.id);
@@ -1625,6 +1629,7 @@ export default function App() {
                     <button
                       className="close"
                       title="Close"
+                      onMouseDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
                         closeTab("design");
@@ -1666,6 +1671,7 @@ export default function App() {
                     <button
                       className="close"
                       title="Close"
+                      onMouseDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
                         closeTab("details");
@@ -1711,6 +1717,7 @@ export default function App() {
                     <button
                       className="close"
                       title="Close"
+                      onMouseDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
                         closeTab(tab.id);

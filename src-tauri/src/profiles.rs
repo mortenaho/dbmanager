@@ -23,6 +23,10 @@ pub fn load(app: &AppHandle) -> Result<Vec<Profile>, String> {
 }
 
 pub fn save_one(app: &AppHandle, mut profile: Profile) -> Result<Profile, String> {
+    if profile.windows_auth {
+        profile.username.clear();
+        profile.remember_password = false;
+    }
     if !profile.remember_password {
         profile.password.clear();
     }
@@ -54,6 +58,7 @@ fn write(app: &AppHandle, profiles: &[Profile]) -> Result<(), String> {
 
 fn same_target(a: &Profile, b: &Profile) -> bool {
     a.engine == b.engine
+        && a.windows_auth == b.windows_auth
         && a.host.eq_ignore_ascii_case(&b.host)
         && a.port == b.port
         && a.username == b.username

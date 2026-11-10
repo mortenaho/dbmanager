@@ -20,6 +20,7 @@ function emptyForm(engine: EngineKind = "mssql"): ConnectPayload & { rememberPas
     port: defaultPort(engine),
     username: engine === "postgres" ? "postgres" : engine === "mysql" ? "root" : "sa",
     password: "",
+    windowsAuth: false,
     database: "",
     trustCert: true,
     encrypt: engine === "mssql",
@@ -63,6 +64,7 @@ export function ConnectDialog({ selectedId, initialError = "", onCancel, onConne
     setForm((current) => ({
       ...current,
       engine,
+      windowsAuth: false,
       port: defaultPort(engine),
       username:
         current.username === "sa" || current.username === "postgres" || current.username === "root"
@@ -91,6 +93,7 @@ export function ConnectDialog({ selectedId, initialError = "", onCancel, onConne
       port: profile.port,
       username: profile.username,
       password: profile.password,
+      windowsAuth: profile.windowsAuth ?? false,
       database: profile.database,
       trustCert: profile.trustCert,
       encrypt: profile.encrypt,
@@ -114,8 +117,9 @@ export function ConnectDialog({ selectedId, initialError = "", onCancel, onConne
       name: form.name.trim() || `${form.host},${form.port}`,
       host: form.host.trim(),
       port: Number(form.port),
-      username: form.username,
-      password: form.password,
+      username: form.windowsAuth ? "" : form.username,
+      password: form.windowsAuth ? "" : form.password,
+      windowsAuth: form.engine === "mssql" && form.windowsAuth,
       database: form.database.trim(),
       trustCert: form.trustCert,
       encrypt: form.encrypt,
@@ -124,8 +128,8 @@ export function ConnectDialog({ selectedId, initialError = "", onCancel, onConne
     const profile: Profile = {
       id: profileId,
       ...payload,
-      rememberPassword: form.rememberPassword,
-      password: form.rememberPassword ? form.password : "",
+      rememberPassword: !form.windowsAuth && form.rememberPassword,
+      password: !form.windowsAuth && form.rememberPassword ? form.password : "",
     };
     try {
       const saved = await saveProfile(profile);
@@ -190,23 +194,26 @@ export function ConnectDialog({ selectedId, initialError = "", onCancel, onConne
           </div>
           <div className="field">
             <label htmlFor="login">Authentication</label>
-            <select id="login" value="sql" disabled>
+            <select id="login" value={form.windowsAuth ? "windows" : "sql"} disabled={form.engine !== "mssql" || busy}
+              onChange={(event) => update("windowsAuth", event.target.value === "windows")}>
               <option value="sql">
                 {form.engine === "mssql" ? "SQL Server Authentication" : "Database user"}
               </option>
+              {form.engine === "mssql" ? <option value="windows">Windows Authentication</option> : null}
             </select>
           </div>
           <div className="field">
             <label htmlFor="user">User name</label>
-            <input id="user" value={form.username} onChange={(event) => update("username", event.target.value)} />
+            <input id="user" value={form.windowsAuth ? "Current Windows user" : form.username} disabled={form.windowsAuth} onChange={(event) => update("username", event.target.value)} />
           </div>
           <div className="field">
             <label htmlFor="password">Password</label>
             <input
               id="password"
               type="password"
-              value={form.password}
-              autoFocus={profileId.length > 0 && form.password.length === 0}
+              disabled={form.windowsAuth}
+              value={form.windowsAuth ? "" : form.password}
+              autoFocus={!form.windowsAuth && profileId.length > 0 && form.password.length === 0}
               onChange={(event) => update("password", event.target.value)}
             />
           </div>
@@ -214,7 +221,8 @@ export function ConnectDialog({ selectedId, initialError = "", onCancel, onConne
             <label>
               <input
                 type="checkbox"
-                checked={form.rememberPassword}
+                disabled={form.windowsAuth}
+                checked={!form.windowsAuth && form.rememberPassword}
                 onChange={(event) => update("rememberPassword", event.target.checked)}
               />
               Remember password

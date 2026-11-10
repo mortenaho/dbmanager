@@ -8,6 +8,7 @@ export type Profile = {
   port: number;
   username: string;
   password: string;
+  windowsAuth?: boolean;
   database: string;
   trustCert: boolean;
   encrypt: boolean;
@@ -22,6 +23,7 @@ export type ConnectPayload = {
   port: number;
   username: string;
   password: string;
+  windowsAuth?: boolean;
   database: string;
   trustCert: boolean;
   encrypt: boolean;

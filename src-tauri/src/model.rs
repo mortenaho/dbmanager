@@ -28,6 +28,7 @@ pub struct Credentials {
     pub port: u16,
     pub username: String,
     pub password: String,
+    pub windows_auth: bool,
     pub database: String,
     pub trust_cert: bool,
     pub encrypt: bool,
@@ -44,6 +45,8 @@ pub struct Profile {
     pub port: u16,
     pub username: String,
     pub password: String,
+    #[serde(default)]
+    pub windows_auth: bool,
     pub database: String,
     pub trust_cert: bool,
     pub encrypt: bool,
@@ -236,6 +239,22 @@ pub fn protected_database(engine: EngineKind, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_profiles_default_to_sql_authentication() {
+        let json = serde_json::json!({
+            "id": "old", "name": "Server", "engine": "mssql", "host": "localhost",
+            "port": 1433, "username": "sa", "password": "", "database": "master",
+            "trustCert": true, "encrypt": true, "ssl": false, "rememberPassword": false
+        });
+        let profile: Profile = serde_json::from_value(json.clone()).unwrap();
+        assert!(!profile.windows_auth);
+        let mut integrated = json;
+        integrated["windowsAuth"] = serde_json::json!(true);
+        let profile: Profile = serde_json::from_value(integrated).unwrap();
+        assert!(profile.windows_auth);
+        assert_eq!(serde_json::to_value(profile).unwrap()["windowsAuth"], true);
+    }
 
     #[test]
     fn quotes_identifiers() {

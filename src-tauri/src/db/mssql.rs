@@ -19,7 +19,7 @@ pub async fn connect(creds: &Credentials, database: &str) -> Result<MssqlClient,
     let mut config = Config::new();
     config.host(&creds.host);
     config.port(creds.port);
-    config.authentication(AuthMethod::sql_server(&creds.username, &creds.password));
+    config.authentication(authentication(creds)?);
     config.application_name("DB Manager");
     if !database.is_empty() {
         config.database(database);
@@ -47,6 +47,20 @@ pub async fn connect(creds: &Credentials, database: &str) -> Result<MssqlClient,
     .await
     .map_err(|_| "Connection timed out during SQL Server login.".to_string())?
     .map_err(|e| e.to_string())
+}
+
+fn authentication(creds: &Credentials) -> Result<AuthMethod, String> {
+    if !creds.windows_auth {
+        return Ok(AuthMethod::sql_server(&creds.username, &creds.password));
+    }
+    #[cfg(windows)]
+    {
+        Ok(AuthMethod::Integrated)
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Windows Authentication requires running DB Manager on Windows. Use SQL Server Authentication on this platform.".into())
+    }
 }
 
 pub async fn use_database(client: &mut MssqlClient, database: &str) -> Result<(), String> {

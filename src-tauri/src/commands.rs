@@ -24,6 +24,8 @@ pub struct ConnectPayload {
     pub port: u16,
     pub username: String,
     pub password: String,
+    #[serde(default)]
+    pub windows_auth: bool,
     pub database: String,
     pub trust_cert: bool,
     pub encrypt: bool,
@@ -41,7 +43,10 @@ pub async fn connect(
     if host.is_empty() {
         return Err("Server name is required.".into());
     }
-    if username.is_empty() {
+    if payload.windows_auth && payload.engine != EngineKind::Mssql {
+        return Err("Windows Authentication is only supported for SQL Server.".into());
+    }
+    if username.is_empty() && !payload.windows_auth {
         return Err("User name is required.".into());
     }
     let port = if payload.port == 0 {
@@ -56,6 +61,7 @@ pub async fn connect(
         port,
         username: username.clone(),
         password: payload.password,
+        windows_auth: payload.windows_auth,
         database: database.clone(),
         trust_cert: payload.trust_cert,
         encrypt: payload.encrypt,

@@ -40,6 +40,36 @@ const SIZED = new Set(["varchar", "nvarchar", "char", "nchar"]);
 const DECIMAL = new Set(["decimal", "numeric"]);
 const INTEGER = new Set(["int", "integer", "bigint", "smallint", "tinyint"]);
 
+export function defaultPresets(engine: EngineKind, dataType: string): { label: string; value: string }[] {
+  const type = dataType.toLowerCase();
+  if (["date", "datetime", "datetime2", "smalldatetime", "timestamp", "timestamptz", "timestamp with time zone", "timestamp without time zone", "datetimeoffset", "time"].includes(type)) {
+    if (engine === "mssql") {
+      if (type === "datetimeoffset") return [{ label: "Current date and offset", value: "SYSDATETIMEOFFSET()" }];
+      return [
+        { label: "Current date / time", value: "GETDATE()" },
+        { label: "UTC date / time", value: "GETUTCDATE()" },
+        ...(type === "datetime2" ? [{ label: "High precision date / time", value: "SYSDATETIME()" }] : []),
+      ];
+    }
+    const value = type === "date" ? "CURRENT_DATE" : type === "time" ? "CURRENT_TIME" : "CURRENT_TIMESTAMP";
+    return [{ label: "Current date / time", value: engine === "mysql" && value !== "CURRENT_TIMESTAMP" ? `(${value})` : value }];
+  }
+  if (type === "uniqueidentifier" && engine === "mssql") return [
+    { label: "Random GUID", value: "NEWID()" },
+    { label: "Sequential GUID", value: "NEWSEQUENTIALID()" },
+  ];
+  if (type === "uuid" && engine === "postgres") return [{ label: "Random UUID", value: "gen_random_uuid()" }];
+  if (type === "bit" || type === "boolean") return [
+    { label: "False", value: type === "boolean" ? "FALSE" : "0" },
+    { label: "True", value: type === "boolean" ? "TRUE" : "1" },
+  ];
+  if (INTEGER.has(type) || ["decimal", "numeric", "float", "real", "double", "double precision", "money", "smallmoney"].includes(type)) return [
+    { label: "Zero", value: "0" }, { label: "One", value: "1" },
+  ];
+  if (SIZED.has(type) || ["text", "citext"].includes(type)) return [{ label: "Empty string", value: "''" }];
+  return [];
+}
+
 export function engineTypes(engine: EngineKind): string[] {
   if (engine === "mssql") {
     return ["int", "bigint", "smallint", "tinyint", "bit", "decimal", "numeric", "float", "real", "money", "date", "datetime", "datetime2", "time", "char", "nchar", "varchar", "nvarchar", "uniqueidentifier"];
@@ -98,6 +128,16 @@ export function primaryKeyLookupSql(engine: EngineKind, database: string, schema
     return `SELECT con.conname AS name FROM pg_constraint AS con JOIN pg_class AS rel ON rel.oid = con.conrelid JOIN pg_namespace AS nsp ON nsp.oid = rel.relnamespace WHERE con.contype = 'p' AND rel.relname = ${literal(table)} AND nsp.nspname = ${literal(schema)}`;
   }
   return `SELECT constraint_name AS name FROM information_schema.table_constraints WHERE table_schema = ${mysqlSchemaExpr(database)} AND table_name = ${literal(table)} AND constraint_type = 'PRIMARY KEY'`;
+}
+
+export function identityCatalogSql(engine: EngineKind, database: string, schema: string, table: string): string {
+  if (engine === "mssql") {
+    return `SELECT name, CONVERT(nvarchar(100), seed_value), CONVERT(nvarchar(100), increment_value) FROM ${mssqlSys(database)}.identity_columns WHERE object_id = OBJECT_ID(${mssqlObjectId(database, schema, table)})`;
+  }
+  if (engine === "postgres") {
+    return `SELECT column_name, identity_start, identity_increment FROM information_schema.columns WHERE table_schema = ${sqlLiteral(engine, schema)} AND table_name = ${sqlLiteral(engine, table)} AND is_identity = 'YES'`;
+  }
+  return `SELECT column_name, '1', '1' FROM information_schema.columns WHERE table_schema = ${mysqlSchemaExpr(database)} AND table_name = ${sqlLiteral(engine, table)} AND extra LIKE '%auto_increment%'`;
 }
 
 export function createTableSql(engine: EngineKind, schema: string, name: string, columns: ColumnDraft[]): string {
