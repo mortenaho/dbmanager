@@ -41,7 +41,9 @@ export function TableDesigner(props: {
   database: string;
   schema: string;
   name: string;
+  active: boolean;
   onSaved: (schema: string, name: string) => void;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const types = engineTypes(props.engine);
   const [rows, setRows] = useState<Row[]>(() => [blankRow(types[0])]);
@@ -69,6 +71,13 @@ export function TableDesigner(props: {
   const [relationId, setRelationId] = useState("");
   const [tables, setTables] = useState<DbObject[]>([]);
   const [refColumns, setRefColumns] = useState<string[]>([]);
+
+  useEffect(() => {
+    const dirty = schema.trim() !== props.schema.trim() || tableName.trim() !== props.name.trim()
+      || designSnapshot(rows.filter((row) => row.name.trim()).map(draftOf), indexes.map(indexDraft), relations.map(relationDraft))
+        !== designSnapshot(previous, previousIndexes, previousRelations);
+    props.onDirtyChange(dirty);
+  }, [schema, tableName, rows, indexes, relations, previous, previousIndexes, previousRelations, props.schema, props.name, props.onDirtyChange]);
 
   useEffect(() => {
     try {
@@ -168,7 +177,7 @@ export function TableDesigner(props: {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (hasPrimaryMod(event) && isLetterKey(event, "s")) {
+      if (props.active && hasPrimaryMod(event) && isLetterKey(event, "s")) {
         event.preventDefault();
         void save(naming);
       }
@@ -1096,4 +1105,8 @@ function DesignList(props: {
       {props.children}
     </div>
   );
+}
+
+function designSnapshot(columns: ColumnDraft[], indexes: IndexDraft[], relations: RelationDraft[]): string {
+  return JSON.stringify([columns, indexes, relations].map((items) => items.map((item) => ({ ...item, originalName: "" }))));
 }

@@ -100,6 +100,7 @@ const SCRIPT_FILE_LIMIT = 80_000_000;
 
 type TableDesignDoc = {
   id: string;
+  dirty?: boolean;
   connectionId: string;
   engine: EngineKind;
   database: string;
@@ -1179,7 +1180,6 @@ export default function App() {
         setTabMenu(null);
       }}
     >
-      <LoadingIndicator />
       <div className="menu-bar">
         <Menu
           label="File"
@@ -1581,7 +1581,7 @@ export default function App() {
                       setTabMenu({ x: event.clientX, y: event.clientY, id: doc.id });
                     }}
                   >
-                    <span title={doc.name ? objectTabTitle(doc.engine, doc.schema, doc.name) : "New Table"}>
+                    <span style={{ fontWeight: doc.dirty ? 700 : undefined }} title={doc.name ? objectTabTitle(doc.engine, doc.schema, doc.name) : "New Table"}>
                       {doc.name ? objectTabTitle(doc.engine, doc.schema, doc.name) : "New Table"}
                     </span>
                     <button
@@ -1728,21 +1728,29 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              {activeTableDesign ? (
+              {tableDesigns.map((doc) => (
+                <div key={doc.id} style={{ display: doc.id === tableDesignId ? "flex" : "none", flex: 1, minHeight: 0, minWidth: 0 }}>
                 <TableDesigner
-                  connectionId={activeTableDesign.connectionId}
-                  engine={activeTableDesign.engine}
-                  database={activeTableDesign.database}
-                  schema={activeTableDesign.schema}
-                  name={activeTableDesign.name}
+                  connectionId={doc.connectionId}
+                  engine={doc.engine}
+                  database={doc.database}
+                  schema={doc.schema}
+                  name={doc.name}
+                  active={doc.id === tableDesignId}
+                  onDirtyChange={(dirty) => setTableDesigns((current) => {
+                    if (Boolean(current.find((item) => item.id === doc.id)?.dirty) === dirty) return current;
+                    return current.map((item) => item.id === doc.id ? { ...item, dirty } : item);
+                  })}
                   onSaved={(schema, name) => {
                     setTableDesigns((current) =>
-                      current.map((doc) => (doc.id === activeTableDesign.id ? { ...doc, schema, name } : doc)),
+                      current.map((item) => (item.id === doc.id ? { ...item, schema, name, dirty: false } : item)),
                     );
                     setExplorerReload((value) => value + 1);
                   }}
                 />
-              ) : designOpen && designActive ? (
+                </div>
+              ))}
+              {activeTableDesign ? null : designOpen && designActive ? (
                 <DiagramDesigner
                   dbml={designDbml}
                   engine={designEngine}
@@ -1920,7 +1928,7 @@ export default function App() {
             </button>
           </span>
         ) : (
-          <span>{notice || "Ready"}</span>
+          <LoadingIndicator fallback={<span>{notice || "Ready"}</span>} />
         )}
         <span>
           {barConnection
