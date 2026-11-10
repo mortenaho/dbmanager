@@ -303,8 +303,10 @@ export function DesignIcon({ size = 16 }: IconProps) {
 export function AskIcon({ size = 16 }: IconProps) {
   return (
     <LineIcon size={size}>
-      <path d="M2.8 3.2 h10.4 v6.6 H8.2 L6 12.2 V9.8 H2.8 z" />
-      <path d="M5.2 5.6 h5.4 M5.2 7.6 h3" />
+      <rect x="3" y="4.5" width="10" height="9" rx="2" />
+      <path d="M8 2v2.5 M1 8v3 M15 8v3 M6 11h4" />
+      <circle cx="6" cy="8" r="0.8" fill="currentColor" stroke="none" />
+      <circle cx="10" cy="8" r="0.8" fill="currentColor" stroke="none" />
     </LineIcon>
   );
 }

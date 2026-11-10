@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { listColumns, listObjects } from "../api";
+import { executeSql, listColumns, listObjects } from "../api";
 import {
   errorText,
   defaultSchema,
@@ -32,6 +32,9 @@ import {
   TableIcon,
   ViewIcon,
 } from "./Icons";
+
+import { SchemaDialog, type SchemaAction } from "./SchemaDialog";
+import { schemaCatalogSql, type SchemaInfo } from "../sql/schemas";
 
 type Props = {
   width: number;
@@ -96,6 +99,8 @@ export function ObjectExplorer({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState("");
   const [objects, setObjects] = useState<Record<string, DbObject[]>>({});
+  const [schemas, setSchemas] = useState<Record<string, SchemaInfo[]>>({});
+  const [schemaAction, setSchemaAction] = useState<SchemaAction | null>(null);
   const [columns, setColumns] = useState<Record<string, ColumnInfo[]>>({});
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -175,6 +180,28 @@ export function ObjectExplorer({
     }
   }
 
+  async function loadSchemas(connection: Connection, database: string) {
+    if (connection.engine === "mysql") return;
+    const key = `schemas:${connection.id}:${database}`;
+    if (loadingRef.current.has(key)) return;
+    loadingRef.current = new Set(loadingRef.current).add(key);
+    setLoading(loadingRef.current);
+    setErrors((current) => { const next = { ...current }; delete next[key]; return next; });
+    try {
+      const result = await executeSql(connection.id, database, schemaCatalogSql(connection.engine), 10000);
+      const failed = result.messages.find((message) => message.level === "error");
+      if (failed) throw new Error(failed.text);
+      setSchemas((current) => ({ ...current, [`${connection.id}:${database}`]:
+        (result.resultSets[0]?.rows ?? []).map((row) => ({ name: row[0] ?? "", owner: row[1] ?? "" })) }));
+    } catch (reason) {
+      setErrors((current) => ({ ...current, [key]: errorText(reason) }));
+    } finally {
+      loadingRef.current = new Set(loadingRef.current);
+      loadingRef.current.delete(key);
+      setLoading(loadingRef.current);
+    }
+  }
+
   useEffect(() => {
     const term = filter.trim();
     if (!term) return;
@@ -233,11 +260,12 @@ export function ObjectExplorer({
         needle,
         expanded,
         objects,
+        schemas,
         columns,
         loading,
         errors,
       }),
-    [columns, connections, errors, expanded, loading, needle, objects],
+    [columns, connections, errors, expanded, loading, needle, objects, schemas],
   );
   const treeRef = useRef<HTMLDivElement>(null);
   const [startIndex, setStartIndex] = useState(0);
@@ -297,6 +325,7 @@ export function ObjectExplorer({
     setSelected(item.id);
     if (!item.canExpand) {
       if (item.kind.type === "object") onSelectContext(item.kind.connection.id, item.kind.database);
+      if (item.kind.type === "schema") onSelectContext(item.kind.connection.id, item.kind.database);
       return;
     }
     const opening = !item.open;
@@ -306,6 +335,9 @@ export function ObjectExplorer({
     } else if (item.kind.type === "database") {
       onSelectContext(item.kind.connection.id, item.kind.database);
       if (opening) void loadObjects(item.kind.connection, item.kind.database);
+    } else if (item.kind.type === "schemas") {
+      onSelectContext(item.kind.connection.id, item.kind.database);
+      if (opening) void loadSchemas(item.kind.connection, item.kind.database);
     } else if (item.kind.type === "folder") {
       const { connection, database, folder, title } = item.kind;
       onSelectContext(connection.id, database);
@@ -334,7 +366,20 @@ export function ObjectExplorer({
   }
 
   function onRowMenu(event: MouseEvent, item: TreeItem) {
-    if (item.kind.type === "server") {
+    if (item.kind.type === "schemas" || item.kind.type === "schema") {
+      const { connection, database } = item.kind;
+      const schema = item.kind.type === "schema" ? item.kind.schema : undefined;
+      openMenu(event, [
+        { label: "New Schema", icon: <InsertIcon />, action: () => setSchemaAction({ connection, database, mode: "create" }) },
+        ...(schema ? [
+          { label: "Change Owner...", icon: <RenameIcon />, action: () => setSchemaAction({ connection, database, schema, mode: "owner" }) },
+          ...(connection.engine === "postgres" ? [{ label: "Rename...", icon: <RenameIcon />, action: () => setSchemaAction({ connection, database, schema, mode: "rename" }) }] : []),
+          { label: "Delete...", icon: <DisconnectIcon />, action: () => setSchemaAction({ connection, database, schema, mode: "delete" }) },
+          { label: "New Table", icon: <NewTableIcon />, action: () => onDesignTable(connection.id, database, schema.name, "") },
+        ] : []),
+        { label: "Refresh", icon: <RefreshIcon />, action: () => void loadSchemas(connection, database) },
+      ]);
+    } else if (item.kind.type === "server") {
       const connection = item.kind.connection;
       openMenu(event, [
         { label: "New Query", icon: <NewQueryIcon />, action: () => onNewQuery(connection.id, connection.database) },
@@ -445,6 +490,11 @@ export function ObjectExplorer({
       });
       return next;
     });
+    for (const connection of connectionsRef.current.filter((item) => item.id === connectionId)) {
+      for (const database of connection.databases) {
+        if (expandedRef.current.has(`schemas:${connectionId}:${database}`)) void loadSchemas(connection, database);
+      }
+    }
     onRefresh(connectionId);
   }
 
@@ -461,7 +511,7 @@ export function ObjectExplorer({
             onClick={() => {
               setObjects({});
               setColumns({});
-              connections.forEach((connection) => onRefresh(connection.id));
+              connections.forEach((connection) => refreshConnection(connection.id));
             }}
           >
             <RefreshIcon />
@@ -501,6 +551,8 @@ export function ObjectExplorer({
                   onContextMenu={
                     item.kind.type === "server" ||
                     item.kind.type === "database" ||
+                    item.kind.type === "schemas" ||
+                    item.kind.type === "schema" ||
                     item.kind.type === "folder" ||
                     item.kind.type === "object"
                       ? (event) => onRowMenu(event, item)
@@ -533,6 +585,12 @@ export function ObjectExplorer({
           ))}
         </div>
       ) : null}
+      {schemaAction ? <SchemaDialog key={`${schemaAction.connection.id}:${schemaAction.database}:${schemaAction.mode}:${schemaAction.schema?.name ?? ""}`} action={schemaAction}
+        onClose={() => setSchemaAction(null)} onSaved={() => {
+          void loadSchemas(schemaAction.connection, schemaAction.database);
+          void loadObjects(schemaAction.connection, schemaAction.database, true);
+          setSchemaAction(null);
+        }} /> : null}
     </aside>
   );
 }
@@ -575,6 +633,8 @@ type NodeKind =
       title: string;
     }
   | { type: "object"; connection: Connection; database: string; object: DbObject; folder: ObjectFolder }
+  | { type: "schemas"; connection: Connection; database: string }
+  | { type: "schema"; connection: Connection; database: string; schema: SchemaInfo }
   | { type: "column" }
   | { type: "status" };
 
@@ -596,6 +656,7 @@ function buildTree(input: {
   needle: string;
   expanded: Set<string>;
   objects: Record<string, DbObject[]>;
+  schemas: Record<string, SchemaInfo[]>;
   columns: Record<string, ColumnInfo[]>;
   loading: Set<string>;
   errors: Record<string, string>;
@@ -652,6 +713,19 @@ function buildTree(input: {
       pushFolder(rows, input, connection, database, key, "Views", "views", "view", items, objectNeedle);
       pushFolder(rows, input, connection, database, key, "Stored Procedures", "procedures", "procedure", items, objectNeedle);
       pushFolder(rows, input, connection, database, key, "Functions", "functions", "function", items, objectNeedle);
+      if (connection.engine !== "mysql") {
+        const id = `schemas:${key}`;
+        const open = input.expanded.has(id);
+        rows.push({ id, depth: 2, label: "Schemas", icon: "folder", canExpand: true, open, kind: { type: "schemas", connection, database } });
+        if (open) {
+          if (input.loading.has(id)) rows.push(statusRow(`loading:${id}`, 3, "Loading schemas...", "status"));
+          if (input.errors[id]) rows.push(statusRow(`error:${id}`, 3, input.errors[id], "error"));
+          for (const schema of input.schemas[key] ?? []) {
+            rows.push({ id: `${id}:${schema.name}`, depth: 3, label: schema.owner ? `${schema.name} (${schema.owner})` : schema.name,
+              icon: "folder", canExpand: false, open: false, kind: { type: "schema", connection, database, schema } });
+          }
+        }
+      }
     }
     if (input.needle && pending > 0) {
       rows.push(statusRow(`search:${connection.id}`, 1, pending === 1 ? "Searching 1 database..." : `Searching ${pending} databases...`, "status"));
