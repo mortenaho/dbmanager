@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { SearchableSelect } from "./SearchableSelect";
 import { executeSql, listColumns, listObjects } from "../api";
 import {
   buildTableStatements,
@@ -46,7 +47,7 @@ export function TableDesigner(props: {
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const types = engineTypes(props.engine);
-  const [rows, setRows] = useState<Row[]>(() => [blankRow(types[0])]);
+  const [rows, setRows] = useState<Row[]>([]);
   const [previous, setPrevious] = useState<ColumnDraft[]>([]);
   const [selected, setSelected] = useState("");
   const [error, setError] = useState("");
@@ -92,8 +93,7 @@ export function TableDesigner(props: {
     setSchema(props.schema);
     setTableName(props.name);
     if (!props.name) {
-      const first = blankRow(base[0]);
-      setRows([first]);
+      setRows([]);
       setPrevious([]);
       setIndexes([]);
       setRelations([]);
@@ -101,7 +101,7 @@ export function TableDesigner(props: {
       setPreviousRelations([]);
       setIndexId("");
       setRelationId("");
-      setSelected(first.key);
+      setSelected("");
       setError("");
       return;
     }
@@ -138,7 +138,7 @@ export function TableDesigner(props: {
           }
           return row;
         });
-        const next = loaded.length ? withBlank(loaded) : [blankRow(base[0])];
+        const next = loaded;
         const loadedIndexes = parseIndexes(indexRows).map(indexRow);
         const loadedRelations = parseRelations(props.engine, relationRows).map(relationRow);
         setRows(next);
@@ -179,11 +179,12 @@ export function TableDesigner(props: {
     const onKey = (event: KeyboardEvent) => {
       if (props.active && hasPrimaryMod(event) && isLetterKey(event, "s")) {
         event.preventDefault();
-        void save(naming);
+        event.stopImmediatePropagation();
+        if (!busy) void save(naming);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   });
 
   const current = rows.find((row) => row.key === selected) ?? rows[0];
@@ -233,7 +234,7 @@ export function TableDesigner(props: {
         if (merged.primaryKey || merged.identity) merged.nullable = false;
         return merged;
       });
-      return withBlank(next);
+      return next;
     });
     if (patch.name === undefined) return;
     const from = rows.find((row) => row.key === key)?.name.trim() ?? "";
@@ -246,13 +247,11 @@ export function TableDesigner(props: {
 
   function toggleKey(key: string) {
     setRows((items) =>
-      withBlank(
-        items.map((row) => {
-          if (row.key !== key || !row.name.trim()) return row;
-          const primaryKey = !row.primaryKey;
-          return { ...row, primaryKey, nullable: primaryKey ? false : row.nullable };
-        }),
-      ),
+      items.map((row) => {
+        if (row.key !== key || !row.name.trim()) return row;
+        const primaryKey = !row.primaryKey;
+        return { ...row, primaryKey, nullable: primaryKey ? false : row.nullable };
+      }),
     );
   }
 
@@ -319,10 +318,9 @@ export function TableDesigner(props: {
   }
 
   function deleteColumn() {
-    setRows((items) => {
-      const next = items.filter((row) => row.key !== selected);
-      return withBlank(next.length ? next : [blankRow(types[0])]);
-    });
+    const next = rows.filter((row) => row.key !== current?.key);
+    setRows(next);
+    setSelected(next[0]?.key ?? "");
   }
 
   function startSplit(event: ReactMouseEvent) {
@@ -339,7 +337,7 @@ export function TableDesigner(props: {
   }
 
   function rememberSaved(columns: Row[]) {
-    setRows((items) => withBlank(items.map((row) => (row.name.trim() ? { ...row, originalName: row.name } : row))));
+    setRows((items) => items.map((row) => (row.name.trim() ? { ...row, originalName: row.name } : row)));
     setPrevious(columns.map((column) => ({ ...draftOf(column), originalName: column.name })));
     setIndexes((items) => items.map((item) => ({ ...item, originalName: item.name.trim() })));
     setPreviousIndexes(indexes.map((item) => ({ ...indexDraft(item), originalName: item.name.trim() })));
@@ -505,13 +503,8 @@ export function TableDesigner(props: {
                   />
                 </td>
                 <td>
-                  <select aria-label="Data Type" value={row.dataType} onChange={(event) => update(row.key, { dataType: event.target.value })}>
-                    {knownTypes.map((type) => (
-                      <option key={type} value={type}>
-                        {type === row.dataType ? formatColumnType(row) : type}
-                      </option>
-                    ))}
-                  </select>
+                  <SearchableSelect value={row.dataType} label={formatColumnType(row)} options={knownTypes}
+                    onChange={(dataType) => update(row.key, { dataType })} />
                 </td>
                 <td className="td-null">
                   <input
@@ -684,13 +677,8 @@ export function TableDesigner(props: {
               <input value={current.name} onChange={(event) => update(current.key, { name: event.target.value })} />
             </Property>
             <Property label="Data Type">
-              <select value={current.dataType} onChange={(event) => update(current.key, { dataType: event.target.value })}>
-                {knownTypes.map((type) => (
-                  <option key={type} value={type}>
-                    {type}
-                  </option>
-                ))}
-              </select>
+              <SearchableSelect value={current.dataType} options={knownTypes}
+                onChange={(dataType) => update(current.key, { dataType })} />
             </Property>
             <Property label="Length">
               <input
@@ -907,31 +895,6 @@ function KeyIcon() {
       />
     </svg>
   );
-}
-
-function withBlank(rows: Row[]): Row[] {
-  const last = rows[rows.length - 1];
-  if (last && !last.name.trim() && !last.originalName) return rows;
-  const source = rows[0];
-  return [
-    ...rows,
-    {
-      key: nextKey(),
-      name: "",
-      originalName: "",
-      dataType: source?.dataType ?? "int",
-      length: sizedType(source?.dataType ?? "") ? 50 : 0,
-      precision: 18,
-      scale: 0,
-      nullable: true,
-      primaryKey: false,
-      identity: false,
-      seed: 1,
-      increment: 1,
-      defaultValue: "",
-      comment: "",
-    },
-  ];
 }
 
 function draftOf(row: Row): ColumnDraft {

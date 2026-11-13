@@ -215,8 +215,18 @@ pub async fn create_database(
     conn: &mut EngineConn,
     creds: &Credentials,
     name: &str,
+    collation: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let name = require_ident(name, "Database")?;
+    let collation = collation.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(value) = collation {
+        if !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err("Invalid collation or encoding name.".into());
+        }
+    }
     ensure_open(conn, creds).await?;
     match conn {
         EngineConn::Postgres(clients) => {
@@ -227,12 +237,12 @@ pub async fn create_database(
                     .await
                     .map_err(|_| error)?,
             };
-            postgres::create_database(client, &name).await?;
+            postgres::create_database(client, &name, collation).await?;
         }
-        EngineConn::Mysql(conn) => mysql::create_database(conn, &name).await?,
+        EngineConn::Mysql(conn) => mysql::create_database(conn, &name, collation).await?,
         EngineConn::Mssql(client) => {
             mssql::use_database(client, "master").await?;
-            mssql::create_database(client, &name).await?;
+            mssql::create_database(client, &name, collation).await?;
         }
         EngineConn::Closed => return Err("Connection is closed.".into()),
     }

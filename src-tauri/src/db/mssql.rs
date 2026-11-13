@@ -286,8 +286,15 @@ pub async fn rename_relation(
     exec(client, &sql).await
 }
 
-pub async fn create_database(client: &mut MssqlClient, name: &str) -> Result<(), String> {
-    let sql = format!("CREATE DATABASE {}", quote_mssql(name));
+pub async fn create_database(
+    client: &mut MssqlClient,
+    name: &str,
+    collation: Option<&str>,
+) -> Result<(), String> {
+    let mut sql = format!("CREATE DATABASE {}", quote_mssql(name));
+    if let Some(collation) = collation {
+        sql.push_str(&format!(" COLLATE {collation}"));
+    }
     exec(client, &sql).await
 }
 

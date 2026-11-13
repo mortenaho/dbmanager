@@ -1962,6 +1962,7 @@ export default function App() {
       {createDbId ? (
         <CreateDatabaseDialog
           connectionId={createDbId}
+          connection={connections.find((connection) => connection.id === createDbId)!}
           onCancel={() => setCreateDbId(null)}
           onCreated={(databases) => {
             const id = createDbId;

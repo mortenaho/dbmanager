@@ -168,8 +168,16 @@ pub async fn rename_table(
     conn.query_drop(sql).await.map_err(|e| e.to_string())
 }
 
-pub async fn create_database(conn: &mut mysql_async::Conn, name: &str) -> Result<(), String> {
-    conn.query_drop(format!("CREATE DATABASE {}", quote_mysql(name)))
+pub async fn create_database(
+    conn: &mut mysql_async::Conn,
+    name: &str,
+    collation: Option<&str>,
+) -> Result<(), String> {
+    let mut sql = format!("CREATE DATABASE {}", quote_mysql(name));
+    if let Some(collation) = collation {
+        sql.push_str(&format!(" COLLATE {collation}"));
+    }
+    conn.query_drop(sql)
         .await
         .map_err(|e| e.to_string())
 }

@@ -189,8 +189,15 @@ pub async fn rename_database(client: &Client, name: &str, new_name: &str) -> Res
     client.batch_execute(&sql).await.map_err(|e| e.to_string())
 }
 
-pub async fn create_database(client: &Client, name: &str) -> Result<(), String> {
-    let sql = format!("CREATE DATABASE {}", quote_pg(name));
+pub async fn create_database(
+    client: &Client,
+    name: &str,
+    encoding: Option<&str>,
+) -> Result<(), String> {
+    let mut sql = format!("CREATE DATABASE {}", quote_pg(name));
+    if let Some(encoding) = encoding {
+        sql.push_str(&format!(" TEMPLATE template0 ENCODING '{encoding}'"));
+    }
     client.batch_execute(&sql).await.map_err(|e| e.to_string())
 }
 

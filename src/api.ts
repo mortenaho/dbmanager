@@ -44,8 +44,8 @@ export function listAllColumns(connectionId: string, database: string): Promise<
   return invoke<ColumnRef[]>("list_all_columns", { connectionId, database });
 }
 
-export function createDatabase(connectionId: string, name: string): Promise<string[]> {
-  return invoke<string[]>("create_database", { connectionId, name });
+export function createDatabase(connectionId: string, name: string, collation?: string): Promise<string[]> {
+  return invoke<string[]>("create_database", { connectionId, name, collation: collation || null });
 }
 
 export function renameObject(
