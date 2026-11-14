@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { SearchableSelect } from "./SearchableSelect";
 import { executeSql, listColumns, listObjects } from "../api";
 import {
@@ -52,6 +52,7 @@ export function TableDesigner(props: {
   const [selected, setSelected] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const saving = useRef(false);
   const [naming, setNaming] = useState(false);
   const [schema, setSchema] = useState(props.schema);
   const [tableName, setTableName] = useState(props.name);
@@ -346,6 +347,7 @@ export function TableDesigner(props: {
   }
 
   async function save(force: boolean) {
+    if (saving.current) return;
     const columns = rows.filter((row) => row.name.trim());
     if (!columns.length) {
       setError("Add at least one column.");
@@ -371,6 +373,7 @@ export function TableDesigner(props: {
       setError("Connect to a database before saving the table.");
       return;
     }
+    saving.current = true;
     setBusy(true);
     setError("");
     try {
@@ -414,6 +417,7 @@ export function TableDesigner(props: {
     } catch (reason) {
       setError(errorText(reason));
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   }
